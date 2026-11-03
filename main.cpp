@@ -1,11 +1,15 @@
 #include <iostream>
+#include <algorithm>
 #include <gtk/gtk.h>
 
+#include "MatrixRenderer.h"
 
 struct MatrixState {
     GtkWidget* drawingArea = nullptr;
-    double y = 0.0;
-    double speed = 120.0;
+    guint timerId = 0;
+    gint64 lastUpdate = 0;
+
+    MatrixRenderer renderer;
 };
 
 static void draw(
@@ -16,34 +20,26 @@ static void draw(
     gpointer user_data
 ) {
     auto* state = static_cast<MatrixState*>(user_data);
-
-    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
-    cairo_paint(cr);
-
-    cairo_select_font_face(
-        cr,
-        "monospace",
-        CAIRO_FONT_SLANT_NORMAL,
-        CAIRO_FONT_WEIGHT_NORMAL
-    );
-
-    cairo_set_font_size(cr, 28.0);
-    cairo_set_source_rgb(cr, 0.0, 1.0, 0.0);
-
-    cairo_move_to(cr, 40.0, state->y);
-    cairo_show_text(cr, "Wake up, Neo...");
+    state->renderer.draw(cr, width, height);
 }
 
 static gboolean update(gpointer user_data) {
     auto* state = static_cast<MatrixState*>(user_data);
 
-    state->y += state->speed / 30.0;
+    const gint64 now = g_get_monotonic_time();
 
+    const double deltaTime = std::clamp(
+        static_cast<double>(now - state->lastUpdate) / 1'000'000.0,
+        0.0,
+        0.1
+    );
+
+    state->lastUpdate = now;
+
+    const int width = gtk_widget_get_width(state->drawingArea);
     const int height = gtk_widget_get_height(state->drawingArea);
 
-    if (state->y > height + 30.0) {
-        state->y = 0.0;
-    }
+    state->renderer.update(deltaTime, width, height);
 
     gtk_widget_queue_draw(state->drawingArea);
 
@@ -60,8 +56,7 @@ static void activate(GtkApplication* app, gpointer user_data) {
 
     auto* state = new MatrixState{
         .drawingArea = drawingArea,
-        .y = 0.0,
-        .speed = 120.0
+        .lastUpdate = g_get_monotonic_time()
     };
 
     gtk_drawing_area_set_draw_func(
@@ -73,18 +68,19 @@ static void activate(GtkApplication* app, gpointer user_data) {
 
     gtk_window_set_child(GTK_WINDOW(window), drawingArea);
 
-    // Timer and State are part of the canvas.
-    const guint timerId = g_timeout_add(
-        33,
-        update,
-        state
-    );
+    state->timerId = g_timeout_add(33, update, state);
 
     g_signal_connect(
         window,
         "destroy",
         G_CALLBACK(+[](GtkWidget*, gpointer data) {
             auto* state = static_cast<MatrixState*>(data);
+
+            if (state->timerId != 0) {
+                g_source_remove(state->timerId);
+            }
+
+            delete state;
         }),
         state
     );
@@ -98,7 +94,12 @@ int main(int argc, char** argv) {
         G_APPLICATION_DEFAULT_FLAGS
     );
 
-    g_signal_connect(app, "activate", G_CALLBACK(activate), nullptr);
+    g_signal_connect(
+        app,
+        "activate",
+        G_CALLBACK(activate),
+        nullptr
+    );
 
     const int result = g_application_run(
         G_APPLICATION(app),
