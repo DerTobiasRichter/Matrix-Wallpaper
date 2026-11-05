@@ -20,9 +20,9 @@ public:
     CrtAtmosphere& operator=(const CrtAtmosphere&) = delete;
 
 private:
-    static constexpr int textureWidth = 4;
-    static constexpr int textureHeight = 4;
-    static constexpr double intensity = 0.05;
+    static constexpr int textureWidth = 4092;
+    static constexpr int textureHeight = 2048;
+    static constexpr double intensity = 0.08;
 
     std::mt19937 rng_;
 
