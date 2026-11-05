@@ -15,23 +15,39 @@ MatrixRenderer::MatrixRenderer()
 }
 
 void MatrixRenderer::initializeColumns(int width) {
-    if (columnCount_ != 0 || width <= 0) {
+    if (width <= 0) {
         return;
     }
 
-    columnCount_ = std::max(
+    const std::size_t newColumnCount = std::max(
         std::size_t{1},
         static_cast<std::size_t>(width / characterWidth)
     );
 
-    // Initially populate only a fraction of the available columns.
-    constexpr double initialFillProbability = 0.15;
+    if (newColumnCount == columnCount_) {
+        return;
+    }
 
+    const std::size_t oldColumnCount = columnCount_;
+    columnCount_ = newColumnCount;
+
+    // Remove streams outside the resized viewport.
+    if (newColumnCount < oldColumnCount) {
+        std::erase_if(streams_, [newColumnCount](const ActiveStream& entry) {
+            return entry.stream.column() >= newColumnCount;
+        });
+        return;
+    }
+
+    // Populate only newly available columns.
     std::bernoulli_distribution spawnDistribution(
         initialFillProbability
     );
 
-    for (std::size_t column = 0; column < columnCount_; ++column) {
+    for (std::size_t column = oldColumnCount;
+         column < newColumnCount;
+         ++column) {
+
         if (!spawnDistribution(rng_)) {
             continue;
         }
@@ -40,7 +56,7 @@ void MatrixRenderer::initializeColumns(int width) {
             "systemd: Starting Network Manager service",
             Severity::Info
         }, column);
-    }
+         }
 }
 
 void MatrixRenderer::spawnStream(MatrixMessage message, std::size_t column) {
@@ -135,17 +151,23 @@ void MatrixRenderer::update(
     // Generate synthetic messages at a controlled rate.
     spawnAccumulator_ += deltaTime;
 
-    if (spawnAccumulator_ >= spawnInterval) {
-        spawnAccumulator_ = 0.0;
+    constexpr int maxSpawnsPerUpdate = 4;
+    int spawnCount = 0;
 
-        if (streams_.size() < maxStreams) {
-            spawnTestMessage();
-        }
-    }
+    while (spawnAccumulator_ >= spawnInterval &&
+           spawnCount < maxSpawnsPerUpdate &&
+           streams_.size() + pendingMessages_.size() < maxStreams) {
 
-    if (columnCount_ == 0 || pendingMessages_.empty()) {
-        return;
-    }
+        spawnAccumulator_ -= spawnInterval;
+        spawnTestMessage();
+        ++spawnCount;
+           }
+
+    // Prevent excessive catch-up after long pauses.
+    spawnAccumulator_ = std::min(
+        spawnAccumulator_,
+        spawnInterval * maxSpawnsPerUpdate
+    );
 
     // Track occupied columns to prevent overlapping streams.
     std::vector<bool> occupied(columnCount_, false);

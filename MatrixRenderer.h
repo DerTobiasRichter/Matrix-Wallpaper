@@ -50,9 +50,9 @@ private:
     static constexpr double characterHeight = glyphHeight + verticalPadding;
 
     // Rain density configuration
-    static constexpr double initialFillProbability = 0.33;
-    static constexpr double maxStreamDensity = 0.33;
-    static constexpr double spawnInterval = 0.33;
+    static constexpr double initialFillProbability = 0.40;
+    static constexpr double maxStreamDensity = 0.65;
+    static constexpr double spawnInterval = 0.35;
 
     // CTR Nebula
     double elapsedTime_ = 0.0;

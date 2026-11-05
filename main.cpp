@@ -1,6 +1,8 @@
 #include <iostream>
 #include <algorithm>
 #include <gtk/gtk.h>
+#include <cstdint>
+#include <iomanip>
 
 #include "MatrixRenderer.h"
 
@@ -8,6 +10,15 @@ struct MatrixState {
     GtkWidget* drawingArea = nullptr;
     guint timerId = 0;
     gint64 lastUpdate = 0;
+
+    // Rendering performance metrics
+    gint64 reportStart = 0;
+    gint64 totalDrawTime = 0;
+    gint64 maxDrawTime = 0;
+    std::uint64_t frameCount = 0;
+
+    gint64 updateReportStart = 0;
+    std::uint64_t updateCount = 0;
 
     MatrixRenderer renderer;
 };
@@ -20,7 +31,50 @@ static void draw(
     gpointer user_data
 ) {
     auto* state = static_cast<MatrixState*>(user_data);
+
+    const gint64 start = g_get_monotonic_time();
+
     state->renderer.draw(cr, width, height);
+
+    const gint64 end = g_get_monotonic_time();
+    const gint64 duration = end - start;
+
+    if (state->reportStart == 0) {
+        state->reportStart = start;
+    }
+
+    state->totalDrawTime += duration;
+    state->maxDrawTime = std::max(state->maxDrawTime, duration);
+    ++state->frameCount;
+
+    const double elapsed =
+        static_cast<double>(end - state->reportStart) / 1'000'000.0;
+
+    // Report performance every five seconds.
+    if (elapsed >= 5.0) {
+        const double averageMs =
+            static_cast<double>(state->totalDrawTime) /
+            state->frameCount / 1000.0;
+
+        const double maximumMs =
+            static_cast<double>(state->maxDrawTime) / 1000.0;
+
+        const double fps = state->frameCount / elapsed;
+
+        std::cout
+            << std::fixed << std::setprecision(2)
+            << "[Render] "
+            << width << "x" << height
+            << " | FPS: " << fps
+            << " | Avg: " << averageMs << " ms"
+            << " | Max: " << maximumMs << " ms"
+            << '\n';
+
+        state->reportStart = end;
+        state->totalDrawTime = 0;
+        state->maxDrawTime = 0;
+        state->frameCount = 0;
+    }
 }
 
 static gboolean update(gpointer user_data) {
@@ -42,6 +96,25 @@ static gboolean update(gpointer user_data) {
     state->renderer.update(deltaTime, width, height);
 
     gtk_widget_queue_draw(state->drawingArea);
+
+    ++state->updateCount;
+
+    if (state->updateReportStart == 0) {
+        state->updateReportStart = now;
+    }
+
+    const double elapsed =
+        (now - state->updateReportStart) / 1'000'000.0;
+
+    if (elapsed >= 5.0) {
+        std::cout
+            << "[Update] "
+            << state->updateCount / elapsed
+            << " Hz\n";
+
+        state->updateCount = 0;
+        state->updateReportStart = now;
+    }
 
     return G_SOURCE_CONTINUE;
 }
@@ -68,7 +141,7 @@ static void activate(GtkApplication* app, gpointer user_data) {
 
     gtk_window_set_child(GTK_WINDOW(window), drawingArea);
 
-    state->timerId = g_timeout_add(33, update, state);
+    state->timerId = g_timeout_add(10, update, state);
 
     g_signal_connect(
         window,
