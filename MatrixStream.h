@@ -25,10 +25,7 @@ struct MatrixMessage {
 
 class MatrixStream {
 public:
-    MatrixStream(MatrixMessage message,
-                 std::size_t column,
-                 double speed,
-                 std::size_t minLength = 24);
+    MatrixStream(MatrixMessage message, std::size_t column, double speed, std::size_t minLength = 28);
 
     void update(double deltaTime);
 

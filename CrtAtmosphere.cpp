@@ -7,53 +7,38 @@
 #include <algorithm>
 #include <cmath>
 
+
 CrtAtmosphere::CrtAtmosphere()
     : rng_(std::random_device{}())
 {
-    generateNoise();
+    generateField(fieldA_);
+    generateField(fieldB_);
 }
 
-void CrtAtmosphere::generateNoise() {
-    noise_.resize(textureWidth * textureHeight);
+CrtAtmosphere::~CrtAtmosphere() {
+    if (surface_ != nullptr) {
+        cairo_surface_destroy(surface_);
+    }
+}
+
+void CrtAtmosphere::generateField(std::vector<double>& field) {
+    field.resize(textureWidth * textureHeight);
 
     std::uniform_real_distribution<double> distribution(0.0, 1.0);
 
-    for (double& value : noise_) {
+    for (double& value : field) {
         value = distribution(rng_);
     }
 }
 
-double CrtAtmosphere::sampleNoise(double x, double y) const {
-    const auto wrap = [](int value, int size) {
-        return (value % size + size) % size;
-    };
-
-    const int x0 = static_cast<int>(std::floor(x));
-    const int y0 = static_cast<int>(std::floor(y));
-
-    const double fx = x - std::floor(x);
-    const double fy = y - std::floor(y);
-
-    // Smoothstep interpolation
-    const double sx = fx * fx * (3.0 - 2.0 * fx);
-    const double sy = fy * fy * (3.0 - 2.0 * fy);
-
-    const auto sample = [&](int px, int py) {
-        return noise_[
-            wrap(py, textureHeight) * textureWidth +
-            wrap(px, textureWidth)
-        ];
-    };
-
-    const double a = std::lerp(sample(x0, y0), sample(x0 + 1, y0), sx);
-    const double b = std::lerp(sample(x0, y0 + 1), sample(x0 + 1, y0 + 1), sx);
-
-    return std::lerp(a, b, sy);
-}
-
 void CrtAtmosphere::update(double deltaTime) {
-    offsetX_ += driftSpeedX * deltaTime;
-    offsetY_ += driftSpeedY * deltaTime;
+    blend_ += deltaTime * blendSpeed_;
+
+    if (blend_ >= 1.0) {
+        blend_ = 0.0;
+        fieldA_ = fieldB_;
+        generateField(fieldB_);
+    }
 }
 
 void CrtAtmosphere::updateTexture() {
@@ -61,30 +46,34 @@ void CrtAtmosphere::updateTexture() {
 
     for (int y = 0; y < textureHeight; ++y) {
         for (int x = 0; x < textureWidth; ++x) {
-            // Sample the noise at a lower frequency to create broad clouds.
-            const double value = sampleNoise(
-                x * 0.12 + offsetX_,
-                y * 0.12 + offsetY_
-            );
+            const std::size_t index = y * textureWidth + x;
+
+            double value = std::lerp(fieldA_[index], fieldB_[index], blend_);
+            const double pulse = 0.92 + 0.18 * std::sin(blend_ * 6.28318);
+            value *= pulse;
+
+            // Slight smoothing / shaping
+            value = std::clamp(value, 0.0, 1.0);
+            value = value * value * (3.0 - 2.0 * value); // smoothstep-like
+
+            // Optional quantization for CRT-like blotches
+            value = std::round(value * 5.0) / 5.0;
 
             const auto green = static_cast<std::uint8_t>(
                 std::clamp(value * intensity * 255.0, 0.0, 255.0)
             );
 
-            // Cairo ARGB32 uses premultiplied alpha.
-            pixels_[y * textureWidth + x] =
+            pixels_[index] =
                 0xFF000000u |
                 (static_cast<std::uint32_t>(green) << 8);
         }
     }
 
-    // Release the previous Cairo surface before replacing its pixel data.
     if (surface_ != nullptr) {
         cairo_surface_destroy(surface_);
         surface_ = nullptr;
     }
 
-    // Create a new surface for the current frame.
     surface_ = cairo_image_surface_create_for_data(
         reinterpret_cast<unsigned char*>(pixels_.data()),
         CAIRO_FORMAT_ARGB32,
@@ -120,10 +109,3 @@ void CrtAtmosphere::draw(cairo_t* cr, int width, int height) {
 
     cairo_restore(cr);
 }
-
-CrtAtmosphere::~CrtAtmosphere() {
-    if (surface_ != nullptr) {
-        cairo_surface_destroy(surface_);
-    }
-}
-

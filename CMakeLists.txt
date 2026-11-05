@@ -13,6 +13,10 @@ add_executable(Matrix_Wallpaper main.cpp
         MatrixRenderer.cpp
         MatrixRenderer.h
         CrtAtmosphere.cpp
-        CrtAtmosphere.h)
+        CrtAtmosphere.h
+        PhosphorTrail.cpp
+        PhosphorTrail.h
+        PhosphorGlyph.cpp
+        PhosphorGlyph.h)
 
 target_link_libraries(Matrix_Wallpaper PRIVATE PkgConfig::GTK4)
