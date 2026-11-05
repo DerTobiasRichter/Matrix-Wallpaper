@@ -102,7 +102,7 @@ void CrtAtmosphere::draw(cairo_t* cr, int width, int height) {
 
     cairo_pattern_set_filter(
         cairo_get_source(cr),
-        CAIRO_FILTER_BILINEAR
+        CAIRO_FILTER_NEAREST
     );
 
     cairo_paint(cr);

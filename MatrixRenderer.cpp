@@ -196,10 +196,12 @@ void MatrixRenderer::update(
 }
 
 void MatrixRenderer::draw(cairo_t* cr, int width, int height) {
-    cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+
+    cairo_set_source_rgb(cr, 0.0, 0.04, 0.004);
     cairo_paint(cr);
 
-    atmosphere_.draw(cr, width, height);
+    //TBD too expensive atm .. better later a realization with pre rendered pictures and a slow fade over
+    //atmosphere_.draw(cr, width, height);
 
     // Only one inexpensive textured draw per active stream.
     for (const auto& entry : streams_) {
@@ -233,12 +235,14 @@ void MatrixRenderer::draw(cairo_t* cr, int width, int height) {
             continue;
         }
 
-        cairo_save(cr);
+
         cairo_set_source_surface(cr, entry.glyphSurface.get(), left, top);
         cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
 
         // Limit the drawing area to the cached image bounds.
         cairo_rectangle(cr, left, top, surfaceWidth, surfaceHeight);
+
+        cairo_save(cr);
         cairo_fill(cr);
         cairo_restore(cr);
     }
