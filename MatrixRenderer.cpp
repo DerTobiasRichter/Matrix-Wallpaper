@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 #include <cmath>
+#include <cstdint>
 
 MatrixRenderer::MatrixRenderer()
     : rng_(std::random_device{}())
@@ -31,7 +32,6 @@ void MatrixRenderer::initializeColumns(int width) {
     const std::size_t oldColumnCount = columnCount_;
     columnCount_ = newColumnCount;
 
-    // Remove streams outside the resized viewport.
     if (newColumnCount < oldColumnCount) {
         std::erase_if(streams_, [newColumnCount](const ActiveStream& entry) {
             return entry.stream.column() >= newColumnCount;
@@ -39,15 +39,11 @@ void MatrixRenderer::initializeColumns(int width) {
         return;
     }
 
-    // Populate only newly available columns.
-    std::bernoulli_distribution spawnDistribution(
-        initialFillProbability
-    );
+    // Populate only newly created columns on a resize.
+    std::bernoulli_distribution spawnDistribution(initialFillProbability);
 
     for (std::size_t column = oldColumnCount;
-         column < newColumnCount;
-         ++column) {
-
+         column < newColumnCount; ++column) {
         if (!spawnDistribution(rng_)) {
             continue;
         }
@@ -56,7 +52,7 @@ void MatrixRenderer::initializeColumns(int width) {
             "systemd: Starting Network Manager service",
             Severity::Info
         }, column);
-         }
+    }
 }
 
 void MatrixRenderer::spawnStream(MatrixMessage message, std::size_t column) {
@@ -87,15 +83,15 @@ void MatrixRenderer::spawnStream(MatrixMessage message, std::size_t column) {
     const SeverityVisual visual =
         getSeverityVisual(message.severity);
 
-    streams_.push_back({
-        MatrixStream(
-            std::move(message),
-            column,
-            speedDistribution(rng_)
-        ),
+    ActiveStream entry{
+        MatrixStream(std::move(message), column, speedDistribution(rng_)),
         PhosphorTrail::randomTrailLength(rng_),
         visual
-    });
+    };
+
+    // Build the complete colored glyph stream only once.
+    buildGlyphSurface(entry);
+    streams_.push_back(std::move(entry));
 }
 
 void MatrixRenderer::append(MatrixMessage message) {
@@ -151,23 +147,17 @@ void MatrixRenderer::update(
     // Generate synthetic messages at a controlled rate.
     spawnAccumulator_ += deltaTime;
 
-    constexpr int maxSpawnsPerUpdate = 4;
-    int spawnCount = 0;
+    if (spawnAccumulator_ >= spawnInterval) {
+        spawnAccumulator_ = 0.0;
 
-    while (spawnAccumulator_ >= spawnInterval &&
-           spawnCount < maxSpawnsPerUpdate &&
-           streams_.size() + pendingMessages_.size() < maxStreams) {
+        if (streams_.size() < maxStreams) {
+            spawnTestMessage();
+        }
+    }
 
-        spawnAccumulator_ -= spawnInterval;
-        spawnTestMessage();
-        ++spawnCount;
-           }
-
-    // Prevent excessive catch-up after long pauses.
-    spawnAccumulator_ = std::min(
-        spawnAccumulator_,
-        spawnInterval * maxSpawnsPerUpdate
-    );
+    if (columnCount_ == 0 || pendingMessages_.empty()) {
+        return;
+    }
 
     // Track occupied columns to prevent overlapping streams.
     std::vector<bool> occupied(columnCount_, false);
@@ -205,201 +195,223 @@ void MatrixRenderer::update(
     pendingMessages_.clear();
 }
 
-void MatrixRenderer::draw( cairo_t* cr, int width, int height)
-{
-    // Clear background
+void MatrixRenderer::draw(cairo_t* cr, int width, int height) {
     cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
     cairo_paint(cr);
 
-    // Render CRT atmosphere
     atmosphere_.draw(cr, width, height);
 
-    cairo_select_font_face(
-        cr,
-        "monospace",
-        CAIRO_FONT_SLANT_NORMAL,
-        CAIRO_FONT_WEIGHT_NORMAL
-    );
-
-    cairo_font_options_t* options = cairo_font_options_create();
-
-    cairo_font_options_set_antialias(
-        options,
-        CAIRO_ANTIALIAS_GRAY
-    );
-
-    cairo_font_options_set_hint_style(
-        options,
-        CAIRO_HINT_STYLE_NONE
-    );
-
-    cairo_font_options_set_hint_metrics(
-        options,
-        CAIRO_HINT_METRICS_OFF
-    );
-
-    cairo_set_font_size(cr, fontSize);
-    cairo_set_font_options(cr, options);
-    cairo_font_options_destroy(options);
-
-
+    // Only one inexpensive textured draw per active stream.
     for (const auto& entry : streams_) {
         const MatrixStream& stream = entry.stream;
-        const std::string& text = stream.text();
         const SeverityVisual& visual = entry.visual;
 
         const double scale = visual.fontSize / fontSize;
         const double currentGlyphWidth = glyphWidth * scale;
         const double currentCharacterHeight = visual.fontSize + verticalPadding;
-
         const double x = stream.column() * characterWidth + (characterWidth - currentGlyphWidth) * 0.5;
         const double headY = stream.positionY();
-        const double tailOpacityRatio = 0.59;
 
-        cairo_set_font_size(cr, visual.fontSize);
-
-        // Render one phosphor trail per stream
         phosphorTrail_.draw(
-            cr,
-            x,
-            headY,
-            currentGlyphWidth,
-            currentCharacterHeight,
-            entry.trailLength,
-            visual.trailOpacity*tailOpacityRatio
+            cr, x, headY, currentGlyphWidth, currentCharacterHeight,
+            entry.trailLength, visual.trailOpacity
         );
 
-        for (std::size_t i = 0; i < text.size(); ++i) {
-            const double y = headY - i * currentCharacterHeight;
-
-            if (y < 0.0 || y > height) {
-                continue;
-            }
-
-            const MatrixColor color = getGlyphColor(
-                stream.severity(),
-                i,
-                stream.severityFadeLength()
-            );
-
-            // Stable pseudo-random highlight for each glyph
-            std::uint32_t hash =
-                static_cast<std::uint32_t>(stream.column()) * 0x9E3779B9u ^
-                static_cast<std::uint32_t>(stream.speed() * 1000.0) ^
-                static_cast<std::uint32_t>(i) * 0x85EBCA6Bu;
-
-            hash ^= hash >> 16;
-            hash *= 0x7FEB352Du;
-            hash ^= hash >> 15;
-            hash *= 0x846CA68Bu;
-            hash ^= hash >> 16;
-
-            constexpr int highlightProbability = 12;
-
-            const bool highlighted = (hash % 100) < highlightProbability;
-            const double glyphBrightness = highlighted ? 1.25 : 0.70;
-            const double glyphIntensity = std::clamp(visual.brightness * glyphBrightness,0.0, 1.0);
-
-            // Additional phosphor glow for highlighted glyphs
-            if (highlighted) {
-                const double radius = visual.fontSize * 1.23;
-
-                const double centerX = x + currentGlyphWidth * 0.5;
-                const double centerY = y - visual.fontSize * 0.4;
-
-                // Match the decay already applied by getGlyphColor().
-                constexpr double trailDecay = 0.015;
-                const double trailFade = std::exp(
-                    -trailDecay * static_cast<double>(i)
-                );
-
-                // Preserve the glyph's fading intensity when mixing towards white.
-                constexpr double whiteMix = 0.55;
-
-                const double hotRed = std::lerp(color.red, trailFade, whiteMix);
-                const double hotGreen = std::lerp(color.green, trailFade, whiteMix);
-                const double hotBlue = std::lerp(color.blue, trailFade, whiteMix);
-
-                cairo_pattern_t* glow = cairo_pattern_create_radial(
-                    centerX, centerY, 0.2,
-                    centerX, centerY, radius
-                );
-
-                // Bright phosphor hotspot
-                cairo_pattern_add_color_stop_rgba(
-                    glow, 0.1,
-                    hotRed, hotGreen, hotBlue,
-                    glyphIntensity * 0.45
-                );
-
-                // Colored, diffuse halo
-                cairo_pattern_add_color_stop_rgba(
-                    glow, 0.2,
-                    color.red, color.green, color.blue,
-                    glyphIntensity * 0.35
-                );
-
-                cairo_pattern_add_color_stop_rgba(
-                    glow, 1.0,
-                    color.red, color.green, color.blue,
-                    0.0
-                );
-
-                cairo_save(cr);
-
-                // Add emitted light to the existing image.
-                cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
-
-                cairo_set_source(cr, glow);
-                cairo_rectangle(
-                    cr,
-                    centerX - radius,
-                    centerY - radius,
-                    radius * 2.0,
-                    radius * 2.0
-                );
-                cairo_fill(cr);
-
-                cairo_restore(cr);
-                cairo_pattern_destroy(glow);
-            }
-
-            const char glyph[2] = {text[i], '\0'};
-
-            cairo_new_path(cr);
-            cairo_move_to(cr, x, y);
-            cairo_text_path(cr, glyph);
-
-            // Diffuse phosphor fringe around the glyph
-            cairo_set_line_width(cr, 1.6);
-            cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-
-            cairo_set_source_rgba(
-                cr,
-                color.red,
-                color.green,
-                color.blue,
-                std::clamp(
-                    visual.brightness * glyphBrightness * 0.28,0.0, 1.0)
-            );
-
-            cairo_stroke_preserve(cr);
-
-            // Softer glyph core
-            cairo_set_source_rgba(
-                cr,
-                color.red,
-                color.green,
-                color.blue,
-                std::clamp(
-                    visual.brightness * glyphBrightness * 0.65, 0.0, 1.0)
-            );
-
-            cairo_fill(cr);
+        if (!entry.glyphSurface) {
+            continue;
         }
+
+        auto* surface = entry.glyphSurface.get();
+        const double left = x + entry.surfaceXOffset;
+        const double top = headY + entry.surfaceYOffset;
+        const int surfaceWidth = cairo_image_surface_get_width(surface);
+        const int surfaceHeight = cairo_image_surface_get_height(surface);
+
+        // Skip images that are completely outside the window.
+        if (left >= width || left + surfaceWidth <= 0.0 ||
+            top >= height || top + surfaceHeight <= 0.0) {
+            continue;
+        }
+
+        cairo_save(cr);
+        cairo_set_source_surface(cr, entry.glyphSurface.get(), left, top);
+        cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
+
+        // Limit the drawing area to the cached image bounds.
+        cairo_rectangle(cr, left, top, surfaceWidth, surfaceHeight);
+        cairo_fill(cr);
+        cairo_restore(cr);
     }
 }
 
+void MatrixRenderer::buildGlyphSurface(ActiveStream& entry) {
+    const std::string& text = entry.stream.text();
+    if (text.empty()) {
+        return;
+    }
+
+    const double font = entry.visual.fontSize;
+    const double lineHeight = font + verticalPadding;
+    const double currentGlyphWidth = glyphWidth * (font / fontSize);
+
+    // Reproduce the same hinting configuration used in the live renderer.
+    cairo_surface_t* probeSurface = cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32, 1, 1
+    );
+    if (cairo_surface_status(probeSurface) != CAIRO_STATUS_SUCCESS) {
+        cairo_surface_destroy(probeSurface);
+        return;
+    }
+
+    cairo_t* probeCr = cairo_create(probeSurface);
+    cairo_select_font_face(probeCr, "monospace",
+        CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(probeCr, font);
+
+    cairo_font_options_t* options = cairo_font_options_create();
+    cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
+    cairo_font_options_set_hint_style(options, CAIRO_HINT_STYLE_NONE);
+    cairo_font_options_set_hint_metrics(options, CAIRO_HINT_METRICS_OFF);
+    cairo_set_font_options(probeCr, options);
+
+    cairo_font_extents_t extents{};
+    cairo_font_extents(probeCr, &extents);
+    cairo_destroy(probeCr);
+    cairo_surface_destroy(probeSurface);
+
+    // Extra margin holds the entire highlight halo, including glyph bearings.
+    const int padding = std::max(12, static_cast<int>(std::ceil(font * 1.5)));
+    const double headBaseline = padding + extents.ascent
+        + (text.size() - 1) * lineHeight;
+    const double usedWidth = std::max({font, currentGlyphWidth,
+                                       extents.max_x_advance});
+    const double usedHeight = headBaseline + extents.descent + padding;
+
+    // Avoid invalid / excessively large Cairo images.
+    if (usedWidth + 2.0 * padding > 16384.0 ||
+        usedHeight > 16384.0) {
+        cairo_font_options_destroy(options);
+        return;
+    }
+
+    const int surfaceWidth = std::max(
+        1, static_cast<int>(std::ceil(usedWidth)) + 2 * padding
+    );
+    const int surfaceHeight = std::max(
+        1, static_cast<int>(std::ceil(usedHeight))
+    );
+
+    entry.glyphSurface.reset(cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32, surfaceWidth, surfaceHeight
+    ));
+    if (cairo_surface_status(entry.glyphSurface.get()) != CAIRO_STATUS_SUCCESS) {
+        entry.glyphSurface.reset();
+        cairo_font_options_destroy(options);
+        return;
+    }
+
+    cairo_t* offscreen = cairo_create(entry.glyphSurface.get());
+    cairo_select_font_face(offscreen, "monospace",
+        CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(offscreen, font);
+    cairo_set_font_options(offscreen, options);
+    cairo_font_options_destroy(options);
+
+    // All expensive glyph operations run once per stream, not per frame.
+    renderGlyphs(offscreen, entry, static_cast<double>(padding), headBaseline);
+    cairo_destroy(offscreen);
+
+    entry.surfaceXOffset = -static_cast<double>(padding);
+    entry.surfaceYOffset = -headBaseline;
+}
+
+void MatrixRenderer::renderGlyphs(
+    cairo_t* cr, const ActiveStream& entry, double x, double headY
+) {
+    const MatrixStream& stream = entry.stream;
+    const SeverityVisual& visual = entry.visual;
+    const std::string& text = stream.text();
+    const double lineHeight = visual.fontSize + verticalPadding;
+    const double currentGlyphWidth = glyphWidth * (visual.fontSize / fontSize);
+
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const double y = headY - i * lineHeight;
+        const MatrixColor color = getGlyphColor(
+            stream.severity(), i, stream.severityFadeLength()
+        );
+
+        // Stable highlight pattern for the lifetime of each stream.
+        std::uint32_t hash =
+            static_cast<std::uint32_t>(stream.column()) * 0x9E3779B9u ^
+            static_cast<std::uint32_t>(stream.speed() * 1000.0) ^
+            static_cast<std::uint32_t>(i) * 0x85EBCA6Bu;
+        hash ^= hash >> 16;
+        hash *= 0x7FEB352Du;
+        hash ^= hash >> 15;
+        hash *= 0x846CA68Bu;
+        hash ^= hash >> 16;
+
+        constexpr std::uint32_t highlightProbability = 12;
+        const bool highlighted = hash % 100 < highlightProbability;
+        const double glyphBrightness = highlighted ? 1.25 : 0.70;
+        const double intensity = std::clamp(
+            visual.brightness * glyphBrightness, 0.0, 1.0
+        );
+
+        // Keep the previously selected circular additive highlight glow.
+        if (highlighted) {
+            const double radius = visual.fontSize * 0.85;
+            const double centerX = x + currentGlyphWidth * 0.5;
+            const double centerY = y - visual.fontSize * 0.4;
+
+            // getGlyphColor() already includes the exponential tail decay.
+            const double trailFade = std::exp(-0.015 * static_cast<double>(i));
+            constexpr double whiteMix = 0.45;
+            const double hotRed = std::lerp(color.red, trailFade, whiteMix);
+            const double hotGreen = std::lerp(color.green, trailFade, whiteMix);
+            const double hotBlue = std::lerp(color.blue, trailFade, whiteMix);
+
+            cairo_pattern_t* glow = cairo_pattern_create_radial(
+                centerX, centerY, 0.2,
+                centerX, centerY, radius
+            );
+            cairo_pattern_add_color_stop_rgba(
+                glow, 0.1, hotRed, hotGreen, hotBlue, intensity * 0.45
+            );
+            cairo_pattern_add_color_stop_rgba(
+                glow, 0.2, color.red, color.green, color.blue, intensity * 0.49
+            );
+            cairo_pattern_add_color_stop_rgba(
+                glow, 1.0, color.red, color.green, color.blue, 0.0
+            );
+
+            cairo_save(cr);
+            cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+            cairo_set_source(cr, glow);
+            cairo_rectangle(cr, centerX - radius, centerY - radius,
+                            2.0 * radius, 2.0 * radius);
+            cairo_fill(cr);
+            cairo_restore(cr);
+            cairo_pattern_destroy(glow);
+        }
+
+        const char glyph[2] = {text[i], '\0'};
+        cairo_new_path(cr);
+        cairo_move_to(cr, x, y);
+        cairo_text_path(cr, glyph);
+
+        // Reuse the current diffuse outline and core opacity values.
+        cairo_set_line_width(cr, 1.6);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        cairo_set_source_rgba(cr, color.red, color.green, color.blue,
+                              intensity * 0.28);
+        cairo_stroke_preserve(cr);
+
+        cairo_set_source_rgba(cr, color.red, color.green, color.blue,
+                              intensity * 0.65);
+        cairo_fill(cr);
+    }
+}
 
 MatrixColor MatrixRenderer::getGlyphColor( Severity severity, std::size_t index,  double severityFadeLength)
 {
@@ -446,15 +458,15 @@ MatrixRenderer::SeverityVisual MatrixRenderer::getSeverityVisual(Severity severi
 
     switch (severity) {
         case Severity::Info:
-            visual = {18.0, 0.35, 0.30};
+            visual = {18.0, 0.40, 0.30};
             break;
 
         case Severity::Warning:
-            visual = {22.0, 0.45, 0.30};
+            visual = {22.0, 0.75, 0.70};
             break;
 
         case Severity::Error:
-            visual = {26.0, 0.56, 0.40};
+            visual = {26.0, 1.00, 1.00};
             break;
     }
 

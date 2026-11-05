@@ -12,7 +12,7 @@ namespace {
     constexpr int textureHeight = 256;
     constexpr int headRow = 224;
 
-    constexpr double intensity = 0.55;
+    constexpr double intensity = 0.19;
     constexpr double trailWidthFactor = 2.5;
 }
 
