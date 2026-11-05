@@ -11,7 +11,6 @@
 class CrtAtmosphere {
 public:
     CrtAtmosphere();
-
     ~CrtAtmosphere();
 
     void update(double deltaTime);
@@ -21,26 +20,21 @@ public:
     CrtAtmosphere& operator=(const CrtAtmosphere&) = delete;
 
 private:
-    static constexpr int textureWidth = 24;
-    static constexpr int textureHeight = 24;
-
-    static constexpr double driftSpeedX = 0.35;
-    static constexpr double driftSpeedY = -0.18;
-
-    static constexpr double intensity = 0.065;
+    static constexpr int textureWidth = 16;
+    static constexpr int textureHeight = 16;
+    static constexpr double intensity = 0.05;
 
     std::mt19937 rng_;
 
-    std::vector<double> noise_;
+    std::vector<double> fieldA_;
+    std::vector<double> fieldB_;
     std::vector<std::uint32_t> pixels_;
 
     cairo_surface_t* surface_ = nullptr;
 
-    double offsetX_ = 0.0;
-    double offsetY_ = 0.0;
+    double blend_ = 0.0;
+    double blendSpeed_ = 0.08; // very slow
 
-    void generateNoise();
+    void generateField(std::vector<double>& field);
     void updateTexture();
-
-    [[nodiscard]] double sampleNoise(double x, double y) const;
 };

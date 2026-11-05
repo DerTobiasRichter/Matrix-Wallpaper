@@ -1,10 +1,11 @@
 //
 // Created by tobi on 11/3/26.
 //
-
 #pragma once
 
 #include "MatrixStream.h"
+#include "PhosphorTrail.h"
+#include "PhosphorGlyph.h"
 #include "CrtAtmosphere.h"
 
 #include <cstddef>
@@ -12,19 +13,29 @@
 #include <vector>
 #include <cairo.h>
 
-
-
 class MatrixRenderer {
 public:
     MatrixRenderer();
 
     void update(double deltaTime, int width, int height);
     void draw(cairo_t* cr, int width, int height);
-
     void append(MatrixMessage message);
 
 private:
+    struct SeverityVisual {
+        double fontSize;
+        double brightness;
+        double trailOpacity;
+    };
+
+    struct ActiveStream {
+        MatrixStream stream;
+        int trailLength{};
+        SeverityVisual visual{};
+    };
+
     static constexpr double fontSize = 22.0;
+    static constexpr double maxFontSize = 34.0;
 
     // Spacing between glyphs
     static constexpr double horizontalPadding = 3.0;
@@ -35,25 +46,35 @@ private:
     static constexpr double glyphHeight = 22.0;
 
     // Distance between consecutive glyph positions
-    static constexpr double characterWidth = glyphWidth + horizontalPadding;
+    static constexpr double characterWidth = glyphWidth * (maxFontSize / fontSize) + horizontalPadding;
     static constexpr double characterHeight = glyphHeight + verticalPadding;
+
+    // Rain density configuration
+    static constexpr double initialFillProbability = 0.33;
+    static constexpr double maxStreamDensity = 0.33;
+    static constexpr double spawnInterval = 0.33;
 
     // CTR Nebula
     double elapsedTime_ = 0.0;
 
-    std::vector<MatrixStream> streams_;
+    std::vector<ActiveStream> streams_;
     std::vector<MatrixMessage> pendingMessages_;
-    CrtAtmosphere atmosphere_;
-
     std::mt19937 rng_;
-
     std::size_t columnCount_ = 0;
     std::size_t nextInitialColumn_ = 0;
 
+    PhosphorTrail phosphorTrail_;
+    PhosphorGlyph phosphorGlyph_;
+    CrtAtmosphere atmosphere_;
+
     double spawnAccumulator_ = 0.0;
+
+    [[nodiscard]]
+    SeverityVisual getSeverityVisual(Severity severity);
 
     MatrixColor getGlyphColor(Severity severity, std::size_t index, double severityFadeLength);
     void initializeColumns(int width);
     void spawnStream(MatrixMessage message, std::size_t column);
     void spawnTestMessage();
+
 };
