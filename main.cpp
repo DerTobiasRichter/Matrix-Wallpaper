@@ -77,27 +77,6 @@ struct ApplicationState {
     double cpuReportStart = 0.0;
 };
 
-struct MatrixState {
-    ApplicationState* application = nullptr;
-    MonitorState monitor;
-
-    GtkWidget *drawingArea = nullptr;
-    guint timerId = 0;
-    guint journalWatchId = 0;
-    gint64 lastUpdate = 0;
-    double journalAccumulator = journalImportInterval;
-
-    // Cairo callback metrics (not total GTK/GSK render duration).
-    gint64 reportStart = 0;
-    gint64 totalDrawTime = 0;
-    gint64 maxDrawTime = 0;
-    std::uint64_t frameCount = 0;
-
-    gint64 updateReportStart = 0;
-    std::uint64_t updateCount = 0;
-    double cpuReportStart = 0.0;
-};
-
 static void draw(
     GtkDrawingArea * /*area*/,
     cairo_t *cr,
@@ -141,7 +120,7 @@ static void draw(
 }
 
 static gboolean update(gpointer userData) {
-    auto *state = static_cast<MatrixState *>(userData);
+    auto *state = static_cast<ApplicationState *>(userData);
     const gint64 now = g_get_monotonic_time();
 
     const double deltaTime = std::clamp(
@@ -157,27 +136,41 @@ static gboolean update(gpointer userData) {
         state->journalAccumulator + deltaTime
     );
 
-    if (state->journalAccumulator >= journalImportInterval &&
-        state->application->journalSource.hasPending()) {
-        auto messages = state->application->journalSource.drain(1);
+    if (state->journalAccumulator >= journalImportInterval && state->journalSource.hasPending()) {
+
+        auto messages = state->journalSource.drain(1);
+
         if (!messages.empty()) {
-            for (auto &message: messages) {
-                state->monitor.renderer.append(std::move(message));
+            for (const auto& message : messages) {
+                for (auto& monitor : state->monitors) {
+                    monitor->renderer.append(message);
+                }
             }
+
             state->journalAccumulator -= journalImportInterval;
         }
     }
 
-    const int width = gtk_widget_get_width(state->drawingArea);
-    const int height = gtk_widget_get_height(state->drawingArea);
+    bool anyActive = false;
+    bool anyPending = false;
+    std::size_t totalStreams = 0;
 
-    const bool wasActive = state->monitor.renderer.hasActiveStreams();
-    state->monitor.renderer.update(deltaTime, width, height);
-    const bool isActive = state->monitor.renderer.hasActiveStreams();
+    // Update each monitor independently.
+    for (auto& monitor : state->monitors) {
+        const int width = gtk_widget_get_width(monitor->drawingArea);
+        const int height = gtk_widget_get_height(monitor->drawingArea);
 
-    // Repaint while raining; repaint ONCE more to erase the last expired stream.
-    if (wasActive || isActive) {
-        gtk_widget_queue_draw(state->drawingArea);
+        const bool wasActive = monitor->renderer.hasActiveStreams();
+        monitor->renderer.update(deltaTime, width, height);
+        const bool isActive = monitor->renderer.hasActiveStreams();
+
+        if (wasActive || isActive) {
+            gtk_widget_queue_draw(monitor->drawingArea);
+        }
+
+        anyActive |= isActive;
+        anyPending |= monitor->renderer.hasPendingMessages();
+        totalStreams += monitor->renderer.activeStreamCount();
     }
 
     ++state->updateCount;
@@ -185,21 +178,20 @@ static gboolean update(gpointer userData) {
     if (elapsed >= 5.0) {
         const double currentCpuSeconds = processCpuSeconds();
         const double cpuPercent =
-                (currentCpuSeconds - state->cpuReportStart) / elapsed * 100.0;
+            (currentCpuSeconds - state->cpuReportStart) / elapsed * 100.0;
 
         std::cout << std::fixed << std::setprecision(2)
-                << "[Update] " << state->updateCount / elapsed << " Hz"
-                << " | Streams: " << state->monitor.renderer.activeStreamCount()
-                << " | CPU: " << cpuPercent << "% of one core\n";
+                  << "[Update] " << state->updateCount / elapsed << " Hz"
+                  << " | Streams: " << totalStreams
+                  << " | CPU: " << cpuPercent << "% of one core\n";
 
         state->updateCount = 0;
         state->updateReportStart = now;
         state->cpuReportStart = currentCpuSeconds;
     }
 
-    // No work remains: remove the 66ms timer completely, do not merely skip frames.
-    if (!isActive && !state->monitor.renderer.hasPendingMessages() &&
-        !state->application->journalSource.hasPending()) {
+    // All monitors idle and no queued work?
+    if (!anyActive && !anyPending && !state->journalSource.hasPending()) {
         state->timerId = 0;
         std::cout << "[Animation] idle\n";
         return G_SOURCE_REMOVE;
@@ -208,21 +200,24 @@ static gboolean update(gpointer userData) {
     return G_SOURCE_CONTINUE;
 }
 
-static void startAnimation(MatrixState *state) {
-    if (state->timerId != 0) {
+static void startAnimation(ApplicationState *state) {
+    if (state->timerId != 0 || state->monitors.empty()) {
         return;
     }
 
     const gint64 now = g_get_monotonic_time();
-    state->lastUpdate = now; // No multi-minute deltaTime after waking from idle.
+    state->lastUpdate = now;
     state->journalAccumulator = journalImportInterval;
     state->updateReportStart = now;
     state->updateCount = 0;
     state->cpuReportStart = processCpuSeconds();
-    state->monitor.reportStart = 0;
-    state->monitor.totalDrawTime = 0;
-    state->monitor.maxDrawTime = 0;
-    state->monitor.frameCount = 0;
+
+    for (auto& monitor : state->monitors) {
+        monitor->reportStart = 0;
+        monitor->totalDrawTime = 0;
+        monitor->maxDrawTime = 0;
+        monitor->frameCount = 0;
+    }
 
     state->timerId = g_timeout_add_full(
         G_PRIORITY_DEFAULT,
@@ -231,6 +226,7 @@ static void startAnimation(MatrixState *state) {
         state,
         nullptr
     );
+
     std::cout << "[Animation] active (15 FPS cap)\n";
 }
 
@@ -239,7 +235,7 @@ static gboolean onJournalReady(
     GIOCondition condition,
     gpointer userData
 ) {
-    auto *state = static_cast<MatrixState *>(userData);
+    auto *state = static_cast<ApplicationState *>(userData);
     std::uint64_t notifications = 0;
     while (::read(fd, &notifications, sizeof(notifications)) ==
            static_cast<ssize_t>(sizeof(notifications))) {
@@ -300,61 +296,62 @@ static void createWallpaperWindow(GtkApplication* app, GdkMonitor* monitor, Appl
     // Per-window state
     GtkWidget* drawingArea = gtk_drawing_area_new();
 
-    auto* state = new MatrixState{};
-    state->application = application;
+    auto monitorState = std::make_unique<MonitorState>();
 
-    state->drawingArea = drawingArea;
+    monitorState->window = window;
+    monitorState->drawingArea = drawingArea;
 
-    state->monitor.window = window;
-    state->monitor.drawingArea = drawingArea;
+    MonitorState* monitorPtr = monitorState.get();
 
-    // IMPORTANT: draw() expects MonitorState*
+    application->monitors.push_back(std::move(monitorState));
+
     gtk_drawing_area_set_draw_func(
         GTK_DRAWING_AREA(drawingArea),
         draw,
-        &state->monitor,
+        monitorPtr,
         nullptr
     );
 
     gtk_window_set_child(GTK_WINDOW(window), drawingArea);
 
-    // Journald eventfd
-    state->journalWatchId = g_unix_fd_add_full(
-        G_PRIORITY_DEFAULT,
-        state->application->journalSource.wakeFd(),
-        static_cast<GIOCondition>(
-            G_IO_IN | G_IO_ERR | G_IO_HUP
-        ),
-        onJournalReady,
-        state,
-        nullptr
-    );
-
-    // Cleanup
     g_signal_connect(
-        window, "destroy",
-        G_CALLBACK(+[](GtkWidget*, gpointer data) {
-            auto* state = static_cast<MatrixState*>(data);
+        window,
+        "destroy",
+        G_CALLBACK(+[](GtkWidget* window, gpointer userData) {
+            auto* appState = static_cast<ApplicationState*>(userData);
 
-            if (state->journalWatchId != 0) {
-                g_source_remove(state->journalWatchId);
+            std::erase_if(
+                appState->monitors,
+                [window](const auto& monitor) {
+                    return monitor->window == window;
+                }
+            );
+
+            // Stop shared sources when the last window closes.
+            if (appState->monitors.empty()) {
+                if (appState->timerId != 0) {
+                    g_source_remove(appState->timerId);
+                    appState->timerId = 0;
+                }
+
+                if (appState->journalWatchId != 0) {
+                    g_source_remove(appState->journalWatchId);
+                    appState->journalWatchId = 0;
+                }
             }
-
-            if (state->timerId != 0) {
-                g_source_remove(state->timerId);
-            }
-
-            delete state;
         }),
-        state
+        application
     );
 
     gtk_window_present(GTK_WINDOW(window));
 }
 
 static void activate(GtkApplication* app, gpointer userData) {
-
     auto* application = static_cast<ApplicationState*>(userData);
+
+    if (!application->monitors.empty()) {
+        return;
+    }
 
     GdkDisplay* display = gdk_display_get_default();
     GListModel* monitors = gdk_display_get_monitors(display);
@@ -369,14 +366,26 @@ static void activate(GtkApplication* app, gpointer userData) {
     );
 
     createWallpaperWindow(app, monitor, application);
-
     g_object_unref(monitor);
+
+    // One eventfd watch per application.
+    application->journalWatchId = g_unix_fd_add_full(
+        G_PRIORITY_DEFAULT,
+        application->journalSource.wakeFd(),
+        static_cast<GIOCondition>(G_IO_IN | G_IO_ERR | G_IO_HUP),
+        onJournalReady,
+        application,
+        nullptr
+    );
+
+    if (application->journalSource.hasPending()) {
+        startAnimation(application);
+    }
 }
 
 
 int main(int argc, char **argv)
 {
-
     GtkApplication *app = gtk_application_new(
         "dev.matrix.wallpaper", G_APPLICATION_DEFAULT_FLAGS
     );
@@ -386,6 +395,15 @@ int main(int argc, char **argv)
     g_signal_connect(app, "activate", G_CALLBACK(activate), &applicationState);
 
     const int result = g_application_run(G_APPLICATION(app), argc, argv);
+
+
+    if (applicationState.timerId != 0) {
+        g_source_remove(applicationState.timerId);
+    }
+
+    if (applicationState.journalWatchId != 0) {
+        g_source_remove(applicationState.journalWatchId);
+    }
 
     g_object_unref(app);
     return result;
