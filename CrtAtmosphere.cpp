@@ -1,12 +1,10 @@
 //
 // Created by tobi on 11/3/26.
 //
-
-#include "CrtAtmosphere.h"
-
 #include <algorithm>
 #include <cmath>
 
+#include "CrtAtmosphere.h"
 
 CrtAtmosphere::CrtAtmosphere()
     : rng_(std::random_device{}())

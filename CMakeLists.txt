@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
+pkg_check_modules(LIBSYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
 
 add_executable(Matrix_Wallpaper main.cpp
         MatrixStream.cpp
@@ -17,6 +19,12 @@ add_executable(Matrix_Wallpaper main.cpp
         PhosphorTrail.cpp
         PhosphorTrail.h
         PhosphorGlyph.cpp
-        PhosphorGlyph.h)
+        PhosphorGlyph.h
+        JournalSource.cpp
+        JournalSource.h)
 
-target_link_libraries(Matrix_Wallpaper PRIVATE PkgConfig::GTK4)
+target_link_libraries(Matrix_Wallpaper PRIVATE
+        PkgConfig::GTK4
+        PkgConfig::LIBSYSTEMD
+        Threads::Threads
+)
