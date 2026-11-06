@@ -5,6 +5,7 @@
 #include <utility>
 
 #include <gtk/gtk.h>
+#include <gtk4-layer-shell.h>
 #include <glib-unix.h>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -208,10 +209,50 @@ static gboolean onJournalReady(
     return G_SOURCE_CONTINUE;
 }
 
-static void activate(GtkApplication* app, gpointer /*userData*/) {
+static void activate(GtkApplication* app, gpointer user_data) {
     GtkWidget* window = gtk_application_window_new(app);
+
     gtk_window_set_title(GTK_WINDOW(window), "Matrix Wallpaper");
-    gtk_window_set_default_size(GTK_WINDOW(window), 1200, 600);
+    gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+
+    // Initialize Wayland layer shell before the window is realized.
+    gtk_layer_init_for_window(GTK_WINDOW(window));
+
+    gtk_layer_set_namespace(
+        GTK_WINDOW(window),
+        "matrix-wallpaper"
+    );
+
+    // Place the wallpaper behind normal application windows.
+    gtk_layer_set_layer(
+        GTK_WINDOW(window),
+        GTK_LAYER_SHELL_LAYER_BACKGROUND
+    );
+
+    // Fill the entire monitor.
+    gtk_layer_set_anchor(
+        GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, TRUE
+    );
+    gtk_layer_set_anchor(
+        GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_BOTTOM, TRUE
+    );
+    gtk_layer_set_anchor(
+        GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_LEFT, TRUE
+    );
+    gtk_layer_set_anchor(
+        GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE
+    );
+
+    // Do not reserve workspace space.
+    gtk_layer_set_exclusive_zone(GTK_WINDOW(window), -1);
+
+    // Wallpaper must never receive keyboard focus.
+    gtk_layer_set_keyboard_mode(
+        GTK_WINDOW(window),
+        GTK_LAYER_SHELL_KEYBOARD_MODE_NONE
+    );
+
+    gtk_window_set_title(GTK_WINDOW(window), "Matrix Wallpaper");
 
     GtkWidget* drawingArea = gtk_drawing_area_new();
     auto* state = new MatrixState{};

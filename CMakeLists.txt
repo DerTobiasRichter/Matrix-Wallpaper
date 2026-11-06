@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
+pkg_check_modules(GTK4_LAYER_SHELL REQUIRED IMPORTED_TARGET gtk4-layer-shell-0)
 pkg_check_modules(LIBSYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
 
 add_executable(Matrix_Wallpaper main.cpp
@@ -26,5 +27,6 @@ add_executable(Matrix_Wallpaper main.cpp
 target_link_libraries(Matrix_Wallpaper PRIVATE
         PkgConfig::GTK4
         PkgConfig::LIBSYSTEMD
+        PkgConfig::GTK4_LAYER_SHELL
         Threads::Threads
 )
