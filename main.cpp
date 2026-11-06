@@ -361,12 +361,23 @@ static void activate(GtkApplication* app, gpointer userData) {
         return;
     }
 
-    GdkMonitor* monitor = GDK_MONITOR(
-        g_list_model_get_item(monitors, 0)
-    );
+    const guint count = g_list_model_get_n_items(monitors);
 
-    createWallpaperWindow(app, monitor, application);
-    g_object_unref(monitor);
+    for (guint i = 0; i < count; ++i) {
+        GdkMonitor* monitor = GDK_MONITOR(
+            g_list_model_get_item(monitors, i)
+        );
+
+        const char* connector = gdk_monitor_get_connector(monitor);
+
+        std::cout << "[Monitor] Creating wallpaper on "
+                  << (connector ? connector : "unknown")
+                  << '\n';
+
+        createWallpaperWindow(app, monitor, application);
+
+        g_object_unref(monitor);
+    }
 
     // One eventfd watch per application.
     application->journalWatchId = g_unix_fd_add_full(
