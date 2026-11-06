@@ -1,0 +1,12 @@
+#  SPDX-License-Identifier: GPL-3.0-only
+#  Copyright (C) 2026 Tobias Richter
+#  GitHub: https://github.com/DerTobiasRichter
+#
+#  Created on: 2026-11-06
+# Last Modified: 2026-11-06
+#
+#
+
+
+/matrix-wallpaper-*.pkg.tar.zst
+/matrix-wallpaper-debug-*.pkg.tar.zst

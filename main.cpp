@@ -21,6 +21,9 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#include <memory>
+#include <vector>
+
 #include "JournalSource.h"
 #include "MatrixRenderer.h"
 
@@ -41,9 +44,42 @@ namespace {
     }
 } // namespace
 
-struct MatrixState {
-    JournalSource journalSource;
+struct MonitorState {
+    GtkWidget* window = nullptr;
+    GtkWidget* drawingArea = nullptr;
+
     MatrixRenderer renderer;
+
+    // Cairo callback metrics
+    gint64 reportStart = 0;
+    gint64 totalDrawTime = 0;
+    gint64 maxDrawTime = 0;
+    std::uint64_t frameCount = 0;
+};
+
+struct ApplicationState {
+    // Shared event source
+    JournalSource journalSource;
+
+    // Application owns all monitor states
+    std::vector<std::unique_ptr<MonitorState>> monitors;
+
+    // Shared event loop
+    guint timerId = 0;
+    guint journalWatchId = 0;
+
+    gint64 lastUpdate = 0;
+    double journalAccumulator = journalImportInterval;
+
+    // Global performance metrics
+    gint64 updateReportStart = 0;
+    std::uint64_t updateCount = 0;
+    double cpuReportStart = 0.0;
+};
+
+struct MatrixState {
+    ApplicationState* application = nullptr;
+    MonitorState monitor;
 
     GtkWidget *drawingArea = nullptr;
     guint timerId = 0;
@@ -69,7 +105,7 @@ static void draw(
     int height,
     gpointer userData
 ) {
-    auto *state = static_cast<MatrixState *>(userData);
+    auto *state = static_cast<MonitorState *>(userData);
     const gint64 start = g_get_monotonic_time();
 
     state->renderer.draw(cr, width, height);
@@ -122,11 +158,11 @@ static gboolean update(gpointer userData) {
     );
 
     if (state->journalAccumulator >= journalImportInterval &&
-        state->journalSource.hasPending()) {
-        auto messages = state->journalSource.drain(1);
+        state->application->journalSource.hasPending()) {
+        auto messages = state->application->journalSource.drain(1);
         if (!messages.empty()) {
             for (auto &message: messages) {
-                state->renderer.append(std::move(message));
+                state->monitor.renderer.append(std::move(message));
             }
             state->journalAccumulator -= journalImportInterval;
         }
@@ -135,9 +171,9 @@ static gboolean update(gpointer userData) {
     const int width = gtk_widget_get_width(state->drawingArea);
     const int height = gtk_widget_get_height(state->drawingArea);
 
-    const bool wasActive = state->renderer.hasActiveStreams();
-    state->renderer.update(deltaTime, width, height);
-    const bool isActive = state->renderer.hasActiveStreams();
+    const bool wasActive = state->monitor.renderer.hasActiveStreams();
+    state->monitor.renderer.update(deltaTime, width, height);
+    const bool isActive = state->monitor.renderer.hasActiveStreams();
 
     // Repaint while raining; repaint ONCE more to erase the last expired stream.
     if (wasActive || isActive) {
@@ -153,7 +189,7 @@ static gboolean update(gpointer userData) {
 
         std::cout << std::fixed << std::setprecision(2)
                 << "[Update] " << state->updateCount / elapsed << " Hz"
-                << " | Streams: " << state->renderer.activeStreamCount()
+                << " | Streams: " << state->monitor.renderer.activeStreamCount()
                 << " | CPU: " << cpuPercent << "% of one core\n";
 
         state->updateCount = 0;
@@ -162,8 +198,8 @@ static gboolean update(gpointer userData) {
     }
 
     // No work remains: remove the 66ms timer completely, do not merely skip frames.
-    if (!isActive && !state->renderer.hasPendingMessages() &&
-        !state->journalSource.hasPending()) {
+    if (!isActive && !state->monitor.renderer.hasPendingMessages() &&
+        !state->application->journalSource.hasPending()) {
         state->timerId = 0;
         std::cout << "[Animation] idle\n";
         return G_SOURCE_REMOVE;
@@ -183,10 +219,10 @@ static void startAnimation(MatrixState *state) {
     state->updateReportStart = now;
     state->updateCount = 0;
     state->cpuReportStart = processCpuSeconds();
-    state->reportStart = 0;
-    state->totalDrawTime = 0;
-    state->maxDrawTime = 0;
-    state->frameCount = 0;
+    state->monitor.reportStart = 0;
+    state->monitor.totalDrawTime = 0;
+    state->monitor.maxDrawTime = 0;
+    state->monitor.frameCount = 0;
 
     state->timerId = g_timeout_add_full(
         G_PRIORITY_DEFAULT,
@@ -220,27 +256,27 @@ static gboolean onJournalReady(
     return G_SOURCE_CONTINUE;
 }
 
-static void activate(GtkApplication *app, gpointer user_data) {
-    GtkWidget *window = gtk_application_window_new(app);
+static void createWallpaperWindow(GtkApplication* app, GdkMonitor* monitor, ApplicationState* application)
+{
+    GtkWidget* window = gtk_application_window_new(app);
 
     gtk_window_set_title(GTK_WINDOW(window), "Matrix Wallpaper");
     gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
 
-    // Initialize Wayland layer shell before the window is realized.
+    // Initialize Layer Shell
     gtk_layer_init_for_window(GTK_WINDOW(window));
+    gtk_layer_set_monitor(GTK_WINDOW(window), monitor);
 
     gtk_layer_set_namespace(
-        GTK_WINDOW(window),
-        "matrix-wallpaper"
+        GTK_WINDOW(window), "matrix-wallpaper"
     );
 
-    // Place the wallpaper behind normal application windows.
     gtk_layer_set_layer(
         GTK_WINDOW(window),
         GTK_LAYER_SHELL_LAYER_BACKGROUND
     );
 
-    // Fill the entire monitor.
+    // Fill the selected monitor
     gtk_layer_set_anchor(
         GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_TOP, TRUE
     );
@@ -254,60 +290,103 @@ static void activate(GtkApplication *app, gpointer user_data) {
         GTK_WINDOW(window), GTK_LAYER_SHELL_EDGE_RIGHT, TRUE
     );
 
-    // Do not reserve workspace space.
     gtk_layer_set_exclusive_zone(GTK_WINDOW(window), -1);
 
-    // Wallpaper must never receive keyboard focus.
     gtk_layer_set_keyboard_mode(
         GTK_WINDOW(window),
         GTK_LAYER_SHELL_KEYBOARD_MODE_NONE
     );
 
-    gtk_window_set_title(GTK_WINDOW(window), "Matrix Wallpaper");
+    // Per-window state
+    GtkWidget* drawingArea = gtk_drawing_area_new();
 
-    GtkWidget *drawingArea = gtk_drawing_area_new();
-    auto *state = new MatrixState{};
+    auto* state = new MatrixState{};
+    state->application = application;
+
     state->drawingArea = drawingArea;
 
+    state->monitor.window = window;
+    state->monitor.drawingArea = drawingArea;
+
+    // IMPORTANT: draw() expects MonitorState*
     gtk_drawing_area_set_draw_func(
-        GTK_DRAWING_AREA(drawingArea), draw, state, nullptr
+        GTK_DRAWING_AREA(drawingArea),
+        draw,
+        &state->monitor,
+        nullptr
     );
+
     gtk_window_set_child(GTK_WINDOW(window), drawingArea);
 
-    // Subscribe to the worker's eventfd; unlike a timer, this sleeps when idle.
+    // Journald eventfd
     state->journalWatchId = g_unix_fd_add_full(
         G_PRIORITY_DEFAULT,
-        state->journalSource.wakeFd(),
-        static_cast<GIOCondition>(G_IO_IN | G_IO_ERR | G_IO_HUP),
+        state->application->journalSource.wakeFd(),
+        static_cast<GIOCondition>(
+            G_IO_IN | G_IO_ERR | G_IO_HUP
+        ),
         onJournalReady,
         state,
         nullptr
     );
 
+    // Cleanup
     g_signal_connect(
         window, "destroy",
         G_CALLBACK(+[](GtkWidget*, gpointer data) {
             auto* state = static_cast<MatrixState*>(data);
+
             if (state->journalWatchId != 0) {
-            g_source_remove(state->journalWatchId);
+                g_source_remove(state->journalWatchId);
             }
+
             if (state->timerId != 0) {
-            g_source_remove(state->timerId);
+                g_source_remove(state->timerId);
             }
+
             delete state;
-            }),
+        }),
         state
     );
 
     gtk_window_present(GTK_WINDOW(window));
 }
 
-int main(int argc, char **argv) {
+static void activate(GtkApplication* app, gpointer userData) {
+
+    auto* application = static_cast<ApplicationState*>(userData);
+
+    GdkDisplay* display = gdk_display_get_default();
+    GListModel* monitors = gdk_display_get_monitors(display);
+
+    if (g_list_model_get_n_items(monitors) == 0) {
+        g_warning("No monitors available");
+        return;
+    }
+
+    GdkMonitor* monitor = GDK_MONITOR(
+        g_list_model_get_item(monitors, 0)
+    );
+
+    createWallpaperWindow(app, monitor, application);
+
+    g_object_unref(monitor);
+}
+
+
+int main(int argc, char **argv)
+{
+
     GtkApplication *app = gtk_application_new(
         "dev.matrix.wallpaper", G_APPLICATION_DEFAULT_FLAGS
     );
-    g_signal_connect(app, "activate", G_CALLBACK(activate), nullptr);
+
+    ApplicationState applicationState;
+
+    g_signal_connect(app, "activate", G_CALLBACK(activate), &applicationState);
+
     const int result = g_application_run(G_APPLICATION(app), argc, argv);
+
     g_object_unref(app);
     return result;
 }

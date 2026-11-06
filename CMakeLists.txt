@@ -39,7 +39,8 @@ target_link_libraries(Matrix_Wallpaper PRIVATE
         Threads::Threads
 )
 
+set_target_properties(Matrix_Wallpaper PROPERTIES OUTPUT_NAME "matrix-wallpaper")
+
 include(GNUInstallDirs)
-install(TARGETS Matrix_Wallpaper
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-)
+
+install(TARGETS Matrix_Wallpaper RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
