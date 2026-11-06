@@ -3,10 +3,15 @@
 #include <gtk/gtk.h>
 #include <cstdint>
 #include <iomanip>
+#include <utility>
 
 #include "MatrixRenderer.h"
+#include "JournalSource.h"
 
 struct MatrixState {
+    JournalSource journalSource;
+    double journalAccumulator = 0.0;
+
     GtkWidget* drawingArea = nullptr;
     guint timerId = 0;
     gint64 lastUpdate = 0;
@@ -92,6 +97,18 @@ static gboolean update(gpointer user_data) {
 
     const int width = gtk_widget_get_width(state->drawingArea);
     const int height = gtk_widget_get_height(state->drawingArea);
+
+    state->journalAccumulator += deltaTime;
+
+    constexpr double importInterval = 0.49;
+
+    if (state->journalAccumulator >= importInterval) {
+        state->journalAccumulator -= importInterval;
+
+        for (auto& message : state->journalSource.drain(1)) {
+            state->renderer.append(std::move(message));
+        }
+    }
 
     state->renderer.update(deltaTime, width, height);
 

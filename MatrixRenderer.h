@@ -4,15 +4,15 @@
 
 #pragma once
 
-#include "MatrixStream.h"
-#include "PhosphorTrail.h"
-#include "CrtAtmosphere.h"
-
 #include <cstddef>
 #include <memory>
 #include <random>
 #include <vector>
 #include <cairo.h>
+
+#include "MatrixStream.h"
+#include "PhosphorTrail.h"
+#include "CrtAtmosphere.h"
 
 class MatrixRenderer {
 public:
@@ -61,9 +61,8 @@ private:
     static constexpr double characterHeight = glyphHeight + verticalPadding;
 
     // Rain density configuration
-    static constexpr double initialFillProbability = 0.08;
     static constexpr double maxStreamDensity = 0.40;
-    static constexpr double spawnInterval = 0.49;
+
 
     // CTR Nebula
     double elapsedTime_ = 0.0;
@@ -78,16 +77,11 @@ private:
     std::size_t columnCount_ = 0;
     std::size_t nextInitialColumn_ = 0;
 
-    double spawnAccumulator_ = 0.0;
-
     [[nodiscard]]
     SeverityVisual getSeverityVisual(Severity severity);
-
-    MatrixColor getGlyphColor(Severity severity, std::size_t index, double severityFadeLength);
     void initializeColumns(int width);
-    void spawnStream(MatrixMessage message, std::size_t column);
-    void spawnTestMessage();
+    MatrixColor getGlyphColor(Severity severity, std::size_t index, double severityFadeLength);
+    void renderGlyphs(cairo_t* cr, const ActiveStream& entry, double x, double headY);
     void buildGlyphSurface(ActiveStream& entry);
-    void renderGlyphs(cairo_t* cr, const ActiveStream& entry,
-                      double x, double headY);
+    void spawnStream(MatrixMessage message, std::size_t column);
 };

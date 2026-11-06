@@ -1,19 +1,18 @@
 //
 // Created by tobi on 11/3/26.
 //
-
-#include "MatrixRenderer.h"
-
 #include <algorithm>
 #include <string>
 #include <utility>
 #include <cmath>
 #include <cstdint>
 
+#include "MatrixRenderer.h"
+
+
 MatrixRenderer::MatrixRenderer()
     : rng_(std::random_device{}())
-{
-}
+{ }
 
 void MatrixRenderer::initializeColumns(int width) {
     if (width <= 0) {
@@ -29,30 +28,12 @@ void MatrixRenderer::initializeColumns(int width) {
         return;
     }
 
-    const std::size_t oldColumnCount = columnCount_;
     columnCount_ = newColumnCount;
 
-    if (newColumnCount < oldColumnCount) {
-        std::erase_if(streams_, [newColumnCount](const ActiveStream& entry) {
-            return entry.stream.column() >= newColumnCount;
-        });
-        return;
-    }
-
-    // Populate only newly created columns on a resize.
-    std::bernoulli_distribution spawnDistribution(initialFillProbability);
-
-    for (std::size_t column = oldColumnCount;
-         column < newColumnCount; ++column) {
-        if (!spawnDistribution(rng_)) {
-            continue;
-        }
-
-        spawnStream({
-            "systemd: Starting Network Manager service",
-            Severity::Info
-        }, column);
-    }
+    // Remove streams outside the resized viewport.
+    std::erase_if(streams_, [newColumnCount](const ActiveStream& entry) {
+        return entry.stream.column() >= newColumnCount;
+    });
 }
 
 void MatrixRenderer::spawnStream(MatrixMessage message, std::size_t column) {
@@ -98,27 +79,7 @@ void MatrixRenderer::append(MatrixMessage message) {
     pendingMessages_.push_back(std::move(message));
 }
 
-void MatrixRenderer::spawnTestMessage() {
-    static const std::vector<MatrixMessage> messages = {
-        {"systemd: Starting Network Manager", Severity::Info},
-        {"WARNING: Network connection temporarily unavailable", Severity::Warning},
-        {"ERROR: Failed to initialize network device", Severity::Error},
-        {"kernel: USB device connected", Severity::Info},
-        {"NetworkManager: Connection activated", Severity::Info}
-    };
-
-    std::uniform_int_distribution<std::size_t> messageDistribution(
-        0, messages.size() - 1
-    );
-
-    append(messages[messageDistribution(rng_)]);
-}
-
-void MatrixRenderer::update(
-    double deltaTime,
-    int width,
-    int height
-) {
+void MatrixRenderer::update(double deltaTime, int width, int height) {
 
     atmosphere_.update(deltaTime);
 
@@ -131,8 +92,7 @@ void MatrixRenderer::update(
     }
 
     std::erase_if(streams_, [height](const ActiveStream& entry) {
-        const double lineHeight =
-            entry.visual.fontSize + verticalPadding;
+        const double lineHeight = entry.visual.fontSize + verticalPadding;
 
         return entry.stream.isFinished(height, lineHeight);
     });
@@ -144,22 +104,11 @@ void MatrixRenderer::update(
         static_cast<std::size_t>(columnCount_ * maxStreamDensity)
     );
 
-    // Generate synthetic messages at a controlled rate.
-    spawnAccumulator_ += deltaTime;
-
-    if (spawnAccumulator_ >= spawnInterval) {
-        spawnAccumulator_ = 0.0;
-
-        if (streams_.size() < maxStreams) {
-            spawnTestMessage();
-        }
-    }
-
-    if (columnCount_ == 0 || pendingMessages_.empty()) {
+    if (columnCount_ == 0) {
         return;
     }
 
-    // Track occupied columns to prevent overlapping streams.
+    // Track occupied columns.
     std::vector<bool> occupied(columnCount_, false);
 
     for (const auto& entry : streams_) {
@@ -170,12 +119,16 @@ void MatrixRenderer::update(
         0, columnCount_ - 1
     );
 
+    // 1. Spawn real journal messages first.
+    std::size_t processedMessages = 0;
+
     for (auto& message : pendingMessages_) {
         if (streams_.size() >= maxStreams) {
             break;
         }
 
         const std::size_t startColumn = columnDistribution(rng_);
+        bool spawned = false;
 
         for (std::size_t offset = 0; offset < columnCount_; ++offset) {
             const std::size_t column =
@@ -187,12 +140,22 @@ void MatrixRenderer::update(
 
             spawnStream(std::move(message), column);
             occupied[column] = true;
+
+            spawned = true;
+            ++processedMessages;
+            break;
+        }
+
+        if (!spawned) {
             break;
         }
     }
 
-    // Discard unspawned synthetic test messages.
-    pendingMessages_.clear();
+    // Remove only successfully spawned messages.
+    pendingMessages_.erase(
+        pendingMessages_.begin(),
+        pendingMessages_.begin() + processedMessages
+    );
 }
 
 void MatrixRenderer::draw(cairo_t* cr, int width, int height) {
