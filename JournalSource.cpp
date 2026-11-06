@@ -2,22 +2,34 @@
 // Created by tobi on 11/6/26.
 //
 #include <systemd/sd-journal.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <system_error>
 #include <unistd.h>
-#include <cstdint>
+#include <sys/eventfd.h>
 
 #include "JournalSource.h"
+
 
 namespace {
 
 using JournalHandle = std::unique_ptr<sd_journal, decltype(&sd_journal_close)>;
+
+int createWakeFd() {
+    const int fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (fd < 0) {
+        throw std::system_error(errno, std::generic_category(), "eventfd");
+    }
+    return fd;
+}
 
 // sd_journal_get_data() returns FIELD=value, not merely the value.
 // Copy the result immediately: its borrowed memory is invalidated by later reads.
@@ -99,7 +111,16 @@ std::string toStreamText(std::string_view input) {
 }  // namespace
 
 JournalSource::JournalSource()
-    : worker_([this](std::stop_token stopToken) { run(stopToken); }) {
+    : wakeFd_(createWakeFd()) {
+    try {
+        worker_ = std::jthread([this](std::stop_token stopToken) {
+            run(stopToken);
+        });
+    } catch (...) {
+        ::close(wakeFd_);
+        wakeFd_ = -1;
+        throw;
+    }
 }
 
 JournalSource::~JournalSource() {
@@ -109,6 +130,18 @@ JournalSource::~JournalSource() {
     if (worker_.joinable()) {
         worker_.join();
     }
+    if (wakeFd_ >= 0) {
+        ::close(wakeFd_);
+    }
+}
+
+int JournalSource::wakeFd() const noexcept {
+    return wakeFd_;
+}
+
+bool JournalSource::hasPending() const {
+    std::lock_guard lock(queueMutex_);
+    return !queue_.empty();
 }
 
 std::vector<MatrixMessage> JournalSource::drain(std::size_t maxMessages) {
@@ -133,24 +166,45 @@ std::vector<MatrixMessage> JournalSource::drain(std::size_t maxMessages) {
 }
 
 void JournalSource::enqueue(MatrixMessage message) {
-    std::lock_guard lock(queueMutex_);
+    bool wake = false;
+    {
+        std::lock_guard lock(queueMutex_);
 
-    if (queue_.size() >= maxQueuedMessages) {
-        // During log bursts, retain warnings/errors ahead of ambient info logs.
-        const auto info = std::find_if(queue_.begin(), queue_.end(),
-            [](const MatrixMessage& item) {
-                return item.severity == Severity::Info;
-            });
-        if (info != queue_.end()) {
-            queue_.erase(info);
-        } else if (message.severity == Severity::Info) {
-            return;
-        } else {
-            queue_.pop_front();
+        if (queue_.size() >= maxQueuedMessages) {
+            auto evict = std::find_if(queue_.begin(), queue_.end(),
+                [](const MatrixMessage& item) {
+                    return item.severity == Severity::Info;
+                });
+            if (evict == queue_.end()) {
+                if (message.severity == Severity::Info) {
+                    return;
+                }
+                if (message.severity == Severity::Warning) {
+                    evict = std::find_if(queue_.begin(), queue_.end(),
+                        [](const MatrixMessage& item) {
+                            return item.severity == Severity::Warning;
+                        });
+                    if (evict == queue_.end()) {
+                        return;
+                    }
+                } else {
+                    evict = queue_.begin();
+                }
+            }
+            queue_.erase(evict);
         }
+
+        wake = queue_.empty();
+        queue_.push_back(std::move(message));
     }
 
-    queue_.push_back(std::move(message));
+    // Notify GTK only for the empty -> nonempty transition.
+    // eventfd coalesces notifications and is safe to write from this thread.
+    if (wake && wakeFd_ >= 0) {
+        const std::uint64_t one = 1;
+        const auto written = ::write(wakeFd_, &one, sizeof(one));
+        (void)written; // EAGAIN means a notification is already pending.
+    }
 }
 
 void JournalSource::run(std::stop_token stopToken) {
@@ -166,9 +220,8 @@ void JournalSource::run(std::stop_token stopToken) {
     // No need to decompress / copy arbitrarily large journal message fields.
     sd_journal_set_data_threshold(journal.get(), 4096);
 
-    // Load the last 40 journal entries before switching to live mode.
+    // Replay the latest records, then follow subsequent journal entries.
     constexpr std::uint64_t historyCount = 40;
-
     int result = sd_journal_seek_tail(journal.get());
     if (result < 0) {
         std::cerr << "[JournalSource] seek failed: "
@@ -176,32 +229,23 @@ void JournalSource::run(std::stop_token stopToken) {
         return;
     }
 
-    // Move backwards to the oldest entry we want to import.
     result = sd_journal_previous_skip(journal.get(), historyCount);
     if (result < 0) {
-        std::cerr << "[JournalSource] history seek failed: "
+        std::cerr << "[JournalSource] history positioning failed: "
                   << std::strerror(-result) << '\n';
         return;
     }
-
-    // The first historical entry is already selected.
     bool currentEntryReady = result > 0;
-
-    std::cout << "[JournalSource] History: "
-              << result << " entries\n";
 
     const std::string ownPid = std::to_string(getpid());
 
     while (!stopToken.stop_requested()) {
         if (currentEntryReady) {
-            // Process the entry selected by previous_skip().
             currentEntryReady = false;
             result = 1;
         } else {
-            // Continue chronologically towards the journal tail.
             result = sd_journal_next(journal.get());
         }
-
         if (result < 0) {
             std::cerr << "[JournalSource] read failed: "
                       << std::strerror(-result) << '\n';

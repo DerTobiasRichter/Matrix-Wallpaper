@@ -1,22 +1,45 @@
-#include <iostream>
 #include <algorithm>
-#include <gtk/gtk.h>
 #include <cstdint>
 #include <iomanip>
+#include <iostream>
 #include <utility>
 
-#include "MatrixRenderer.h"
+#include <gtk/gtk.h>
+#include <glib-unix.h>
+#include <sys/resource.h>
+#include <unistd.h>
+
 #include "JournalSource.h"
+#include "MatrixRenderer.h"
+
+namespace {
+constexpr guint frameIntervalMs = 66;         // Approximately 15 FPS while active.
+constexpr double journalImportInterval = 0.49; // At most ~2 new streams / second.
+
+// RUSAGE_SELF covers the whole application, including the journal worker.
+double processCpuSeconds() {
+    rusage usage{};
+    if (::getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0.0;
+    }
+    const auto asSeconds = [](const timeval& value) {
+        return static_cast<double>(value.tv_sec) + value.tv_usec / 1'000'000.0;
+    };
+    return asSeconds(usage.ru_utime) + asSeconds(usage.ru_stime);
+}
+} // namespace
 
 struct MatrixState {
     JournalSource journalSource;
-    double journalAccumulator = 0.0;
+    MatrixRenderer renderer;
 
     GtkWidget* drawingArea = nullptr;
     guint timerId = 0;
+    guint journalWatchId = 0;
     gint64 lastUpdate = 0;
+    double journalAccumulator = journalImportInterval;
 
-    // Rendering performance metrics
+    // Cairo callback metrics (not total GTK/GSK render duration).
     gint64 reportStart = 0;
     gint64 totalDrawTime = 0;
     gint64 maxDrawTime = 0;
@@ -24,19 +47,17 @@ struct MatrixState {
 
     gint64 updateReportStart = 0;
     std::uint64_t updateCount = 0;
-
-    MatrixRenderer renderer;
+    double cpuReportStart = 0.0;
 };
 
 static void draw(
-    GtkDrawingArea* area,
+    GtkDrawingArea* /*area*/,
     cairo_t* cr,
     int width,
     int height,
-    gpointer user_data
+    gpointer userData
 ) {
-    auto* state = static_cast<MatrixState*>(user_data);
-
+    auto* state = static_cast<MatrixState*>(userData);
     const gint64 start = g_get_monotonic_time();
 
     state->renderer.draw(cr, width, height);
@@ -52,28 +73,17 @@ static void draw(
     state->maxDrawTime = std::max(state->maxDrawTime, duration);
     ++state->frameCount;
 
-    const double elapsed =
-        static_cast<double>(end - state->reportStart) / 1'000'000.0;
-
-    // Report performance every five seconds.
+    const double elapsed = (end - state->reportStart) / 1'000'000.0;
     if (elapsed >= 5.0) {
         const double averageMs =
-            static_cast<double>(state->totalDrawTime) /
-            state->frameCount / 1000.0;
+            static_cast<double>(state->totalDrawTime) / state->frameCount / 1000.0;
+        const double maximumMs = state->maxDrawTime / 1000.0;
 
-        const double maximumMs =
-            static_cast<double>(state->maxDrawTime) / 1000.0;
-
-        const double fps = state->frameCount / elapsed;
-
-        std::cout
-            << std::fixed << std::setprecision(2)
-            << "[Render] "
-            << width << "x" << height
-            << " | FPS: " << fps
-            << " | Avg: " << averageMs << " ms"
-            << " | Max: " << maximumMs << " ms"
-            << '\n';
+        std::cout << std::fixed << std::setprecision(2)
+                  << "[Render] " << width << 'x' << height
+                  << " | FPS: " << state->frameCount / elapsed
+                  << " | Avg: " << averageMs << " ms"
+                  << " | Max: " << maximumMs << " ms\n";
 
         state->reportStart = end;
         state->totalDrawTime = 0;
@@ -82,94 +92,156 @@ static void draw(
     }
 }
 
-static gboolean update(gpointer user_data) {
-    auto* state = static_cast<MatrixState*>(user_data);
-
+static gboolean update(gpointer userData) {
+    auto* state = static_cast<MatrixState*>(userData);
     const gint64 now = g_get_monotonic_time();
 
     const double deltaTime = std::clamp(
         static_cast<double>(now - state->lastUpdate) / 1'000'000.0,
-        0.0,
-        0.1
+        0.0, 0.1
+    );
+    state->lastUpdate = now;
+
+    // A token bucket with capacity 1: at most one journal record per 490 ms.
+    // No active/pending records? Keep the token for immediate use on next event.
+    state->journalAccumulator = std::min(
+        journalImportInterval,
+        state->journalAccumulator + deltaTime
     );
 
-    state->lastUpdate = now;
+    if (state->journalAccumulator >= journalImportInterval &&
+        state->journalSource.hasPending()) {
+        auto messages = state->journalSource.drain(1);
+        if (!messages.empty()) {
+            for (auto& message : messages) {
+                state->renderer.append(std::move(message));
+            }
+            state->journalAccumulator -= journalImportInterval;
+        }
+    }
 
     const int width = gtk_widget_get_width(state->drawingArea);
     const int height = gtk_widget_get_height(state->drawingArea);
 
-    state->journalAccumulator += deltaTime;
-
-    constexpr double importInterval = 0.49;
-
-    if (state->journalAccumulator >= importInterval) {
-        state->journalAccumulator -= importInterval;
-
-        for (auto& message : state->journalSource.drain(1)) {
-            state->renderer.append(std::move(message));
-        }
-    }
-
+    const bool wasActive = state->renderer.hasActiveStreams();
     state->renderer.update(deltaTime, width, height);
+    const bool isActive = state->renderer.hasActiveStreams();
 
-    gtk_widget_queue_draw(state->drawingArea);
+    // Repaint while raining; repaint ONCE more to erase the last expired stream.
+    if (wasActive || isActive) {
+        gtk_widget_queue_draw(state->drawingArea);
+    }
 
     ++state->updateCount;
-
-    if (state->updateReportStart == 0) {
-        state->updateReportStart = now;
-    }
-
-    const double elapsed =
-        (now - state->updateReportStart) / 1'000'000.0;
-
+    const double elapsed = (now - state->updateReportStart) / 1'000'000.0;
     if (elapsed >= 5.0) {
-        std::cout
-            << "[Update] "
-            << state->updateCount / elapsed
-            << " Hz\n";
+        const double currentCpuSeconds = processCpuSeconds();
+        const double cpuPercent =
+            (currentCpuSeconds - state->cpuReportStart) / elapsed * 100.0;
+
+        std::cout << std::fixed << std::setprecision(2)
+                  << "[Update] " << state->updateCount / elapsed << " Hz"
+                  << " | Streams: " << state->renderer.activeStreamCount()
+                  << " | CPU: " << cpuPercent << "% of one core\n";
 
         state->updateCount = 0;
         state->updateReportStart = now;
+        state->cpuReportStart = currentCpuSeconds;
+    }
+
+    // No work remains: remove the 66ms timer completely, do not merely skip frames.
+    if (!isActive && !state->renderer.hasPendingMessages() &&
+        !state->journalSource.hasPending()) {
+        state->timerId = 0;
+        std::cout << "[Animation] idle\n";
+        return G_SOURCE_REMOVE;
     }
 
     return G_SOURCE_CONTINUE;
 }
 
-static void activate(GtkApplication* app, gpointer user_data) {
-    GtkWidget* window = gtk_application_window_new(app);
+static void startAnimation(MatrixState* state) {
+    if (state->timerId != 0) {
+        return;
+    }
 
+    const gint64 now = g_get_monotonic_time();
+    state->lastUpdate = now; // No multi-minute deltaTime after waking from idle.
+    state->journalAccumulator = journalImportInterval;
+    state->updateReportStart = now;
+    state->updateCount = 0;
+    state->cpuReportStart = processCpuSeconds();
+    state->reportStart = 0;
+    state->totalDrawTime = 0;
+    state->maxDrawTime = 0;
+    state->frameCount = 0;
+
+    state->timerId = g_timeout_add_full(
+        G_PRIORITY_DEFAULT,
+        frameIntervalMs,
+        update,
+        state,
+        nullptr
+    );
+    std::cout << "[Animation] active (15 FPS cap)\n";
+}
+
+static gboolean onJournalReady(
+    gint fd,
+    GIOCondition condition,
+    gpointer userData
+) {
+    auto* state = static_cast<MatrixState*>(userData);
+    std::uint64_t notifications = 0;
+    while (::read(fd, &notifications, sizeof(notifications)) ==
+           static_cast<ssize_t>(sizeof(notifications))) {
+        // eventfd is nonblocking and coalesces concurrent notifications.
+    }
+
+    if ((condition & (G_IO_HUP | G_IO_ERR)) != 0) {
+        state->journalWatchId = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    // This callback runs on the GTK thread; no GTK APIs are called by JournalSource.
+    startAnimation(state);
+    return G_SOURCE_CONTINUE;
+}
+
+static void activate(GtkApplication* app, gpointer /*userData*/) {
+    GtkWidget* window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(window), "Matrix Wallpaper");
     gtk_window_set_default_size(GTK_WINDOW(window), 1200, 600);
 
     GtkWidget* drawingArea = gtk_drawing_area_new();
-
-    auto* state = new MatrixState{
-        .drawingArea = drawingArea,
-        .lastUpdate = g_get_monotonic_time()
-    };
+    auto* state = new MatrixState{};
+    state->drawingArea = drawingArea;
 
     gtk_drawing_area_set_draw_func(
-        GTK_DRAWING_AREA(drawingArea),
-        draw,
+        GTK_DRAWING_AREA(drawingArea), draw, state, nullptr
+    );
+    gtk_window_set_child(GTK_WINDOW(window), drawingArea);
+
+    // Subscribe to the worker's eventfd; unlike a timer, this sleeps when idle.
+    state->journalWatchId = g_unix_fd_add_full(
+        G_PRIORITY_DEFAULT,
+        state->journalSource.wakeFd(),
+        static_cast<GIOCondition>(G_IO_IN | G_IO_ERR | G_IO_HUP),
+        onJournalReady,
         state,
         nullptr
     );
 
-    gtk_window_set_child(GTK_WINDOW(window), drawingArea);
-
-    state->timerId = g_timeout_add(10, update, state);
-
     g_signal_connect(
-        window,
-        "destroy",
+        window, "destroy",
         G_CALLBACK(+[](GtkWidget*, gpointer data) {
             auto* state = static_cast<MatrixState*>(data);
-
+            if (state->journalWatchId != 0) {
+                g_source_remove(state->journalWatchId);
+            }
             if (state->timerId != 0) {
                 g_source_remove(state->timerId);
             }
-
             delete state;
         }),
         state
@@ -180,23 +252,10 @@ static void activate(GtkApplication* app, gpointer user_data) {
 
 int main(int argc, char** argv) {
     GtkApplication* app = gtk_application_new(
-        "dev.matrix.wallpaper",
-        G_APPLICATION_DEFAULT_FLAGS
+        "dev.matrix.wallpaper", G_APPLICATION_DEFAULT_FLAGS
     );
-
-    g_signal_connect(
-        app,
-        "activate",
-        G_CALLBACK(activate),
-        nullptr
-    );
-
-    const int result = g_application_run(
-        G_APPLICATION(app),
-        argc,
-        argv
-    );
-
+    g_signal_connect(app, "activate", G_CALLBACK(activate), nullptr);
+    const int result = g_application_run(G_APPLICATION(app), argc, argv);
     g_object_unref(app);
     return result;
 }

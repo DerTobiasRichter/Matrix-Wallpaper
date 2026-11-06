@@ -26,15 +26,23 @@ public:
     [[nodiscard]]
     std::vector<MatrixMessage> drain(std::size_t maxMessages = 1);
 
+    // Linux eventfd: readable when the first queued event arrives.
+    // GTK watches this FD without polling; never close it from GTK.
+    [[nodiscard]] int wakeFd() const noexcept;
+    [[nodiscard]] bool hasPending() const;
+
 private:
     void run(std::stop_token stopToken);
     void enqueue(MatrixMessage message);
 
     static constexpr std::size_t maxQueuedMessages = 64;
 
-    std::mutex queueMutex_;
+    mutable std::mutex queueMutex_;
     std::deque<MatrixMessage> queue_;
 
-    // Must be declared last so it is stopped before the queue/mutex are destroyed.
+    // Created before worker_, closed after its thread has exited.
+    int wakeFd_ = -1;
+
+    // Must be declared last so it is stopped before queue/mutex/fd are destroyed.
     std::jthread worker_;
 };
