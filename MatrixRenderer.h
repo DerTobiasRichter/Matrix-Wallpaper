@@ -62,7 +62,7 @@ private:
 
     // Rain density configuration
     static constexpr double initialFillProbability = 0.08;
-    static constexpr double maxStreamDensity = 0.28;
+    static constexpr double maxStreamDensity = 0.40;
     static constexpr double spawnInterval = 0.49;
 
     // CTR Nebula
