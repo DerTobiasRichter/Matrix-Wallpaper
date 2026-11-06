@@ -12,7 +12,7 @@
 
 #include "MatrixStream.h"
 #include "PhosphorTrail.h"
-#include "CrtAtmosphere.h"
+
 
 class MatrixRenderer {
 public:
@@ -21,6 +21,10 @@ public:
     void update(double deltaTime, int width, int height);
     void draw(cairo_t* cr, int width, int height);
     void append(MatrixMessage message);
+
+    [[nodiscard]] bool hasActiveStreams() const noexcept;
+    [[nodiscard]] bool hasPendingMessages() const noexcept;
+    [[nodiscard]] std::size_t activeStreamCount() const noexcept;
 
 private:
     struct SeverityVisual {
@@ -63,19 +67,15 @@ private:
     // Rain density configuration
     static constexpr double maxStreamDensity = 0.40;
 
-
-    // CTR Nebula
-    double elapsedTime_ = 0.0;
-
     std::vector<ActiveStream> streams_;
     std::vector<MatrixMessage> pendingMessages_;
     PhosphorTrail phosphorTrail_;
-    CrtAtmosphere atmosphere_;
 
     std::mt19937 rng_;
 
     std::size_t columnCount_ = 0;
-    std::size_t nextInitialColumn_ = 0;
+    // Bound renderer-side backpressure independently from JournalSource's queue.
+    static constexpr std::size_t maxPendingMessages = 64;
 
     [[nodiscard]]
     SeverityVisual getSeverityVisual(Severity severity);

@@ -1,14 +1,14 @@
 //
 // Created by tobi on 11/3/26.
 //
+
+#include "MatrixRenderer.h"
+
 #include <algorithm>
 #include <string>
 #include <utility>
 #include <cmath>
 #include <cstdint>
-
-#include "MatrixRenderer.h"
-
 
 MatrixRenderer::MatrixRenderer()
     : rng_(std::random_device{}())
@@ -76,41 +76,78 @@ void MatrixRenderer::spawnStream(MatrixMessage message, std::size_t column) {
 }
 
 void MatrixRenderer::append(MatrixMessage message) {
+    // Never let a busy journal allocate an unbounded second queue.
+    if (pendingMessages_.size() >= maxPendingMessages) {
+        auto evict = std::find_if(
+            pendingMessages_.begin(), pendingMessages_.end(),
+            [](const MatrixMessage& existing) {
+                return existing.severity == Severity::Info;
+            }
+        );
+
+        if (evict == pendingMessages_.end()) {
+            if (message.severity == Severity::Info) {
+                return;
+            }
+            if (message.severity == Severity::Warning) {
+                evict = std::find_if(
+                    pendingMessages_.begin(), pendingMessages_.end(),
+                    [](const MatrixMessage& existing) {
+                        return existing.severity == Severity::Warning;
+                    }
+                );
+                if (evict == pendingMessages_.end()) {
+                    return; // Do not discard errors for a warning.
+                }
+            } else {
+                evict = pendingMessages_.begin();
+            }
+        }
+        pendingMessages_.erase(evict);
+    }
+
     pendingMessages_.push_back(std::move(message));
 }
 
+bool MatrixRenderer::hasActiveStreams() const noexcept {
+    return !streams_.empty();
+}
+
+bool MatrixRenderer::hasPendingMessages() const noexcept {
+    return !pendingMessages_.empty();
+}
+
+std::size_t MatrixRenderer::activeStreamCount() const noexcept {
+    return streams_.size();
+}
+
 void MatrixRenderer::update(double deltaTime, int width, int height) {
-
-    atmosphere_.update(deltaTime);
-
-    elapsedTime_ += deltaTime;
     initializeColumns(width);
 
-    // Update
     for (auto& entry : streams_) {
         entry.stream.update(deltaTime);
     }
 
     std::erase_if(streams_, [height](const ActiveStream& entry) {
         const double lineHeight = entry.visual.fontSize + verticalPadding;
-
         return entry.stream.isFinished(height, lineHeight);
     });
 
-    // Generate synthetic messages for the initial renderer test.
-    // Limit the number of simultaneously active streams.
+    // No ambient streams and no CRT updates: on most frames this is all.
+    if (columnCount_ == 0 || pendingMessages_.empty()) {
+        return;
+    }
+
     const std::size_t maxStreams = std::max(
         std::size_t{1},
         static_cast<std::size_t>(columnCount_ * maxStreamDensity)
     );
 
-    if (columnCount_ == 0) {
+    if (streams_.size() >= maxStreams) {
         return;
     }
 
-    // Track occupied columns.
     std::vector<bool> occupied(columnCount_, false);
-
     for (const auto& entry : streams_) {
         occupied[entry.stream.column()] = true;
     }
@@ -119,9 +156,7 @@ void MatrixRenderer::update(double deltaTime, int width, int height) {
         0, columnCount_ - 1
     );
 
-    // 1. Spawn real journal messages first.
     std::size_t processedMessages = 0;
-
     for (auto& message : pendingMessages_) {
         if (streams_.size() >= maxStreams) {
             break;
@@ -129,29 +164,23 @@ void MatrixRenderer::update(double deltaTime, int width, int height) {
 
         const std::size_t startColumn = columnDistribution(rng_);
         bool spawned = false;
-
         for (std::size_t offset = 0; offset < columnCount_; ++offset) {
-            const std::size_t column =
-                (startColumn + offset) % columnCount_;
-
+            const std::size_t column = (startColumn + offset) % columnCount_;
             if (occupied[column]) {
                 continue;
             }
 
             spawnStream(std::move(message), column);
             occupied[column] = true;
-
             spawned = true;
             ++processedMessages;
             break;
         }
-
         if (!spawned) {
             break;
         }
     }
 
-    // Remove only successfully spawned messages.
     pendingMessages_.erase(
         pendingMessages_.begin(),
         pendingMessages_.begin() + processedMessages
@@ -163,8 +192,7 @@ void MatrixRenderer::draw(cairo_t* cr, int width, int height) {
     cairo_set_source_rgb(cr, 0.0, 0.04, 0.004);
     cairo_paint(cr);
 
-    //TBD too expensive atm .. better later a realization with pre rendered pictures and a slow fade over
-    //atmosphere_.draw(cr, width, height);
+    // Static dark-green background only. No CRT atmosphere processing.
 
     // Only one inexpensive textured draw per active stream.
     for (const auto& entry : streams_) {
