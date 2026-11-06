@@ -1,3 +1,11 @@
+#
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Tobias Richter
+# GitHub: https://github.com/DerTobiasRichter
+#
+# Created on: 2026-11-05
+# Last Modified: 2026-11-06
+
 cmake_minimum_required(VERSION 4.4)
 project(Matrix_Wallpaper LANGUAGES CXX)
 
@@ -29,4 +37,9 @@ target_link_libraries(Matrix_Wallpaper PRIVATE
         PkgConfig::LIBSYSTEMD
         PkgConfig::GTK4_LAYER_SHELL
         Threads::Threads
+)
+
+include(GNUInstallDirs)
+install(TARGETS Matrix_Wallpaper
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

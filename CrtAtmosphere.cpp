@@ -1,14 +1,20 @@
-//
-// Created by tobi on 11/3/26.
-//
+/*
+ * SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Tobias Richter
+ * GitHub: https://github.com/DerTobiasRichter
+ *
+ * Created on: 2026-11-03
+ * Last Modified: 2026-11-06
+ *
+ *
+ */
 #include <algorithm>
 #include <cmath>
 
 #include "CrtAtmosphere.h"
 
 CrtAtmosphere::CrtAtmosphere()
-    : rng_(std::random_device{}())
-{
+    : rng_(std::random_device{}()) {
     generateField(fieldA_);
     generateField(fieldB_);
 }
@@ -19,12 +25,12 @@ CrtAtmosphere::~CrtAtmosphere() {
     }
 }
 
-void CrtAtmosphere::generateField(std::vector<double>& field) {
+void CrtAtmosphere::generateField(std::vector<double> &field) {
     field.resize(textureWidth * textureHeight);
 
     std::uniform_real_distribution<double> distribution(0.0, 1.0);
 
-    for (double& value : field) {
+    for (double &value: field) {
         value = distribution(rng_);
     }
 }
@@ -62,8 +68,8 @@ void CrtAtmosphere::updateTexture() {
             );
 
             pixels_[index] =
-                0xFF000000u |
-                (static_cast<std::uint32_t>(green) << 8);
+                    0xFF000000u |
+                    (static_cast<std::uint32_t>(green) << 8);
         }
     }
 
@@ -73,7 +79,7 @@ void CrtAtmosphere::updateTexture() {
     }
 
     surface_ = cairo_image_surface_create_for_data(
-        reinterpret_cast<unsigned char*>(pixels_.data()),
+        reinterpret_cast<unsigned char *>(pixels_.data()),
         CAIRO_FORMAT_ARGB32,
         textureWidth,
         textureHeight,
@@ -81,7 +87,7 @@ void CrtAtmosphere::updateTexture() {
     );
 }
 
-void CrtAtmosphere::draw(cairo_t* cr, int width, int height) {
+void CrtAtmosphere::draw(cairo_t *cr, int width, int height) {
     if (width <= 0 || height <= 0) {
         return;
     }
