@@ -23,6 +23,7 @@
 
 #include <memory>
 #include <vector>
+#include <string>
 
 #include "JournalSource.h"
 #include "MatrixRenderer.h"
@@ -60,6 +61,8 @@ struct MonitorState {
 struct ApplicationState {
     // Shared event source
     JournalSource journalSource;
+    // Empty = all monitors
+    std::string selectedMonitor;
 
     // Application owns all monitor states
     std::vector<std::unique_ptr<MonitorState>> monitors;
@@ -346,6 +349,22 @@ static void createWallpaperWindow(GtkApplication* app, GdkMonitor* monitor, Appl
     gtk_window_present(GTK_WINDOW(window));
 }
 
+static gint handleLocalOptions(
+    GApplication* /*app*/,
+    GVariantDict* options,
+    gpointer userData
+) {
+    auto* state = static_cast<ApplicationState*>(userData);
+
+    const char* connector = nullptr;
+
+    if (g_variant_dict_lookup(options, "monitor", "&s", &connector)) {
+        state->selectedMonitor = connector;
+    }
+
+    return -1; // Continue normal application startup
+}
+
 static void activate(GtkApplication* app, gpointer userData) {
     auto* application = static_cast<ApplicationState*>(userData);
 
@@ -362,6 +381,7 @@ static void activate(GtkApplication* app, gpointer userData) {
     }
 
     const guint count = g_list_model_get_n_items(monitors);
+    bool found = false;
 
     for (guint i = 0; i < count; ++i) {
         GdkMonitor* monitor = GDK_MONITOR(
@@ -370,13 +390,30 @@ static void activate(GtkApplication* app, gpointer userData) {
 
         const char* connector = gdk_monitor_get_connector(monitor);
 
-        std::cout << "[Monitor] Creating wallpaper on "
-                  << (connector ? connector : "unknown")
-                  << '\n';
+        const bool selected =
+            application->selectedMonitor.empty() ||
+            (connector && application->selectedMonitor == connector);
 
-        createWallpaperWindow(app, monitor, application);
+        if (selected) {
+            std::cout << "[Monitor] Creating wallpaper on "
+                      << (connector ? connector : "unknown")
+                      << '\n';
+
+            createWallpaperWindow(app, monitor, application);
+            found = true;
+        }
 
         g_object_unref(monitor);
+    }
+
+    if (!found) {
+        g_warning(
+            "Monitor '%s' not found",
+            application->selectedMonitor.c_str()
+        );
+
+        g_application_quit(G_APPLICATION(app));
+        return;
     }
 
     // One eventfd watch per application.
@@ -402,6 +439,23 @@ int main(int argc, char **argv)
     );
 
     ApplicationState applicationState;
+
+    g_application_add_main_option(
+    G_APPLICATION(app),
+    "monitor",
+    '\0',
+    G_OPTION_FLAG_NONE,
+    G_OPTION_ARG_STRING,
+    "Display connector (default: all monitors)",
+    "CONNECTOR"
+);
+
+    g_signal_connect(
+        app,
+        "handle-local-options",
+        G_CALLBACK(handleLocalOptions),
+        &applicationState
+    );
 
     g_signal_connect(app, "activate", G_CALLBACK(activate), &applicationState);
 
