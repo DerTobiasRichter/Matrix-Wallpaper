@@ -1,6 +1,13 @@
-//
-// Created by tobi on 11/5/26.
-//
+/*
+ * SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Tobias Richter
+ * GitHub: https://github.com/DerTobiasRichter
+ *
+ * Created on: 2026-11-05
+ * Last Modified: 2026-11-06
+ *
+ *
+ */
 #include "PhosphorTrail.h"
 
 #include <algorithm>
