@@ -30,7 +30,9 @@ add_executable(Matrix_Wallpaper main.cpp
         PhosphorGlyph.cpp
         PhosphorGlyph.h
         JournalSource.cpp
-        JournalSource.h)
+        JournalSource.h
+        MonitorManager.cpp
+        MonitorManager.h)
 
 target_link_libraries(Matrix_Wallpaper PRIVATE
         PkgConfig::GTK4
