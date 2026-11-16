@@ -27,6 +27,7 @@
 
 #include "JournalSource.h"
 #include "MatrixRenderer.h"
+#include "MonitorManager.h"
 
 namespace {
     constexpr guint frameIntervalMs = 66; // Approximately 15 FPS while active.
@@ -78,6 +79,9 @@ struct ApplicationState {
     gint64 updateReportStart = 0;
     std::uint64_t updateCount = 0;
     double cpuReportStart = 0.0;
+
+    //Monitor state change manager
+    std::unique_ptr<MonitorManager> monitorManager;
 };
 
 static void draw(
@@ -373,6 +377,12 @@ static void activate(GtkApplication* app, gpointer userData) {
     }
 
     GdkDisplay* display = gdk_display_get_default();
+    if (!application->monitorManager) {
+        application->monitorManager =
+            std::make_unique<MonitorManager>(display);
+
+        application->monitorManager->initialize();
+    }
     GListModel* monitors = gdk_display_get_monitors(display);
 
     if (g_list_model_get_n_items(monitors) == 0) {
@@ -470,6 +480,7 @@ int main(int argc, char **argv)
         g_source_remove(applicationState.journalWatchId);
     }
 
+    applicationState.monitorManager.reset();
     g_object_unref(app);
     return result;
 }
