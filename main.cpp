@@ -20,6 +20,7 @@
 #include <glib-unix.h>
 #include <sys/resource.h>
 #include <unistd.h>
+#include <csignal>
 
 #include <memory>
 #include <vector>
@@ -88,6 +89,10 @@ struct ApplicationState {
 
     //Monitor state change manager
     std::unique_ptr<MonitorManager> monitorManager;
+
+    //Paranoia Mode Controls
+    guint paranoiaSignalId = 0;
+    bool paranoiaMode = false;
 };
 
 static void draw(
@@ -368,6 +373,18 @@ static gint handleLocalOptions(
     return -1; // Continue normal application startup
 }
 
+static gboolean onParanoiaSignal(gpointer userData) {
+    auto* state = static_cast<ApplicationState*>(userData);
+
+    state->paranoiaMode = !state->paranoiaMode;
+    state->journalSource.setParanoiaMode(state->paranoiaMode);
+
+    Debug::log("[Paranoia] ",
+               state->paranoiaMode ? "enabled" : "disabled");
+
+    return G_SOURCE_CONTINUE;
+}
+
 static void activate(GtkApplication* app, gpointer userData) {
     auto* application = static_cast<ApplicationState*>(userData);
 
@@ -376,6 +393,14 @@ static void activate(GtkApplication* app, gpointer userData) {
     if (!applicationHeld) {
         g_application_hold(G_APPLICATION(app));
         applicationHeld = true;
+    }
+
+    if (application->paranoiaSignalId == 0) {
+        application->paranoiaSignalId = g_unix_signal_add(
+            SIGUSR1,
+            onParanoiaSignal,
+            application
+        );
     }
 
     if (!application->monitors.empty()) {
@@ -490,6 +515,9 @@ int main(int argc, char **argv)
 
     const int result = g_application_run(G_APPLICATION(app), argc, argv);
 
+    if (applicationState.paranoiaSignalId != 0) {
+        g_source_remove(applicationState.paranoiaSignalId);
+    }
 
     if (applicationState.timerId != 0) {
         g_source_remove(applicationState.timerId);

@@ -16,6 +16,7 @@
 #include <stop_token>
 #include <thread>
 #include <vector>
+#include <atomic>
 
 #include "MatrixStream.h"
 
@@ -33,14 +34,23 @@ public:
     [[nodiscard]]
     std::vector<MatrixMessage> drain(std::size_t maxMessages = 1);
 
+    void setParanoiaMode(bool enabled) noexcept {
+        paranoiaMode_.store(enabled);
+    }
+
+    [[nodiscard]] bool isParanoiaMode() const noexcept {
+        return paranoiaMode_.load();
+    }
+
     // Linux eventfd: readable when the first queued event arrives.
     // GTK watches this FD without polling; never close it from GTK.
     [[nodiscard]] int wakeFd() const noexcept;
     [[nodiscard]] bool hasPending() const;
 
 private:
-    void run(std::stop_token stopToken);
+    void run(const std::stop_token& stopToken);
     void enqueue(MatrixMessage message);
+    std::atomic_bool paranoiaMode_{false};
 
     static constexpr std::size_t maxQueuedMessages = 64;
 
