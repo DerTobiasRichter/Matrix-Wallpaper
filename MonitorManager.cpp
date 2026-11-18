@@ -102,7 +102,7 @@ void MonitorManager::onMonitorGeometryChanged(GObject *object, GParamSpec *pspec
 }
 
 void MonitorManager::observeMonitor(GdkMonitor* monitor) {
-    Debug::log("[MonitorManager] unobserveMonitor() called");
+    Debug::log("[MonitorManager] ObserveMonitor() called");
     Debug::log("[MonitorManager] Observing: ",
     (gdk_monitor_get_connector(monitor)? gdk_monitor_get_connector(monitor): "unknown"));
 
