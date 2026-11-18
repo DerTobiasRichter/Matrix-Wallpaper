@@ -46,6 +46,19 @@ Check the installed files:
 pacman -Ql matrix-wallpaper
 ```
 
+#### Development Build for Arch packages
+
+For clean builds in your workspace directory.
+```bash
+git clone https://github.com/DerTobiasRichter/Matrix-Wallpaper.git
+cd Matrix-Wallpaper
+```
+Use the following clean, enforced new build and install option instead.
+```bash
+makepkg -Cfi
+```
+This way you can rebuild and install the application without changing the package version number.
+
 ### Build and install with CMake
 
 Install the required development dependencies:
