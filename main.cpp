@@ -25,6 +25,7 @@
 #include <vector>
 #include <string>
 
+#include "Debug.h"
 #include "JournalSource.h"
 #include "MatrixRenderer.h"
 #include "MonitorManager.h"
@@ -62,6 +63,9 @@ struct MonitorState {
 };
 
 struct ApplicationState {
+    // Debug.h Log State
+    bool debug = false;
+
     // Shared event source
     JournalSource journalSource;
     // Empty = all monitors
@@ -115,11 +119,11 @@ static void draw(
                 static_cast<double>(state->totalDrawTime) / state->frameCount / 1000.0;
         const double maximumMs = state->maxDrawTime / 1000.0;
 
-        std::cout << std::fixed << std::setprecision(2)
-                << "[Render] " << width << 'x' << height
-                << " | FPS: " << state->frameCount / elapsed
-                << " | Avg: " << averageMs << " ms"
-                << " | Max: " << maximumMs << " ms\n";
+        Debug::log(std::fixed, std::setprecision(2),
+            "[Render] ", width << 'x' << height,
+            " | FPS: ",state->frameCount / elapsed,
+            " | Avg: ",averageMs, " ms",
+            " | Max: ", maximumMs," ms");
 
         state->reportStart = end;
         state->totalDrawTime = 0;
@@ -189,10 +193,12 @@ static gboolean update(gpointer userData) {
         const double cpuPercent =
             (currentCpuSeconds - state->cpuReportStart) / elapsed * 100.0;
 
-        std::cout << std::fixed << std::setprecision(2)
-                  << "[Update] " << state->updateCount / elapsed << " Hz"
-                  << " | Streams: " << totalStreams
-                  << " | CPU: " << cpuPercent << "% of one core\n";
+        Debug::log(
+            std::fixed, std::setprecision(2),
+            "[Update] ", state->updateCount / elapsed, " Hz",
+            " | Streams: ", totalStreams,
+            " | CPU: ", cpuPercent, "% of one core"
+        );
 
         state->updateCount = 0;
         state->updateReportStart = now;
@@ -202,7 +208,7 @@ static gboolean update(gpointer userData) {
     // All monitors idle and no queued work?
     if (!anyActive && !anyPending && !state->journalSource.hasPending()) {
         state->timerId = 0;
-        std::cout << "[Animation] idle\n";
+        Debug::log("[Animation] idle");
         return G_SOURCE_REMOVE;
     }
 
@@ -236,7 +242,7 @@ static void startAnimation(ApplicationState *state) {
         nullptr
     );
 
-    std::cout << "[Animation] active (15 FPS cap)\n";
+    Debug::log("[Animation] active (15 FPS cap)");
 }
 
 static gboolean onJournalReady(
@@ -350,6 +356,9 @@ static gint handleLocalOptions(
 ) {
     auto* state = static_cast<ApplicationState*>(userData);
 
+    state->debug = g_variant_dict_contains(options, "debug");
+    Debug::enabled = state->debug;
+
     const char* connector = nullptr;
 
     if (g_variant_dict_lookup(options, "monitor", "&s", &connector)) {
@@ -393,7 +402,7 @@ static void activate(GtkApplication* app, gpointer userData) {
 
             GtkWidget* window = (*it)->window;
 
-            std::cout << "[Monitor] Removing wallpaper" << std::endl;
+            Debug::log("[Monitor] Removing wallpaper");
 
             gtk_window_destroy(GTK_WINDOW(window));
         });
@@ -419,9 +428,7 @@ static void activate(GtkApplication* app, gpointer userData) {
             return;
         }
 
-        std::cout << "[Monitor] Creating wallpaper on "
-                  << (connector ? connector : "unknown")
-                  << std::endl;
+        Debug::log("[Monitor] Creating wallpaper on ", (connector ? connector : "unknown"));
 
         createWallpaperWindow(app, monitor, application);
     });
@@ -454,14 +461,23 @@ int main(int argc, char **argv)
     ApplicationState applicationState;
 
     g_application_add_main_option(
-    G_APPLICATION(app),
-    "monitor",
-    '\0',
-    G_OPTION_FLAG_NONE,
-    G_OPTION_ARG_STRING,
-    "Display connector (default: all monitors)",
-    "CONNECTOR"
-);
+        G_APPLICATION(app),
+        "monitor",
+        '\0',
+        G_OPTION_FLAG_NONE,
+        G_OPTION_ARG_STRING,
+        "Display connector (default: all monitors)",
+        "CONNECTOR"
+    );
+    g_application_add_main_option(
+        G_APPLICATION(app),
+        "debug",
+        'd',
+        G_OPTION_FLAG_NONE,
+        G_OPTION_ARG_NONE,
+        "Enable diagnostic output",
+        nullptr
+    );
 
     g_signal_connect(
         app,

@@ -18,6 +18,8 @@
 #include <iostream>
 #include <vector>
 
+#include "Debug.h"
+
 MonitorManager::MonitorManager(GdkDisplay* display)
     : display_(display) {
 }
@@ -57,8 +59,7 @@ void MonitorManager::initialize() {
         this
     );
 
-    std::cout << "[MonitorManager] Monitoring initialized"
-              << std::endl;
+    Debug::log("[MonitorManager] Monitoring initialized");
 
     synchronizeMonitors();
 }
@@ -74,12 +75,11 @@ void MonitorManager::onMonitorsChanged(
     auto* self = static_cast<MonitorManager*>(userData);
     self->synchronizeMonitors();
 
-    std::cout
-        << "[MonitorManager] Monitors changed"
-        << " | position: " << position
-        << " | removed: " << removed
-        << " | added: " << added
-        << std::endl;
+    Debug::log(
+        "[MonitorManager] Monitors changed",
+        " | position: ", position,
+        " | removed: ", removed,
+        " | added: ", added);
 }
 
 void MonitorManager::onMonitorGeometryChanged(GObject *object, GParamSpec *pspec, gpointer userData) {
@@ -94,17 +94,18 @@ void MonitorManager::onMonitorGeometryChanged(GObject *object, GParamSpec *pspec
     auto* self = static_cast<MonitorManager*>(userData);
     self->updateMonitorState(monitor);
 
-    std::cout
-        << "[MonitorManager] Geometry changed: "
-        << (connector ? connector : "unknown")
-        << " | " << geometry.width << "x" << geometry.height
-        << " @ " << geometry.x << "," << geometry.y
-        << " | ready: " << std::boolalpha
-        << isMonitorReady(monitor)
-        << std::endl;
+    Debug::log(
+        "[MonitorManager] Geometry changed: ", (connector ? connector : "unknown"),
+        " | ", geometry.width, "x", geometry.height,
+        " @ ", geometry.x, ",", geometry.y,
+        " | ready: ", std::boolalpha, isMonitorReady(monitor));
 }
 
 void MonitorManager::observeMonitor(GdkMonitor* monitor) {
+    Debug::log("[MonitorManager] ObserveMonitor() called");
+    Debug::log("[MonitorManager] Observing: ",
+    (gdk_monitor_get_connector(monitor)? gdk_monitor_get_connector(monitor): "unknown"));
+
     if (observedMonitors_.contains(monitor)) {
         return;
     }
@@ -124,13 +125,9 @@ void MonitorManager::observeMonitor(GdkMonitor* monitor) {
 
 void MonitorManager::unobserveMonitor(GdkMonitor *monitor) {
 
-    std::cout << "[MonitorManager] unobserveMonitor() called" << std::endl;
-    std::cout
-        << "[MonitorManager] Unobserving: "
-        << (gdk_monitor_get_connector(monitor)
-                ? gdk_monitor_get_connector(monitor)
-                : "unknown")
-        << std::endl;
+    Debug::log("[MonitorManager] unobserveMonitor() called");
+    Debug::log("[MonitorManager] Unobserving: ",
+        (gdk_monitor_get_connector(monitor)? gdk_monitor_get_connector(monitor): "unknown"));
 
     const auto it = observedMonitors_.find(monitor);
 
@@ -207,15 +204,12 @@ void MonitorManager::updateMonitorState(GdkMonitor* monitor) {
 
     const char* connector = gdk_monitor_get_connector(monitor);
 
-    std::cout
-        << "[MonitorManager] State: "
-        << (connector ? connector : "unknown")
-        << " | ready=" << ready
-        << " | wasReady=" << wasReady
-        << std::endl;
+    Debug::log(
+        "[MonitorManager] State: ",(connector ? connector : "unknown"),
+        " | ready=", ready, " | wasReady=", wasReady);
 
     if (ready && !wasReady) {
-        std::cout << "[MonitorManager] Inserting because ready=true" << std::endl;
+        Debug::log("[MonitorManager] Inserting because ready=true");
 
         readyMonitors_.insert(monitor);
 
@@ -224,7 +218,7 @@ void MonitorManager::updateMonitorState(GdkMonitor* monitor) {
         }
     }
     else if (!ready && wasReady) {
-       std::cout << "[MonitorManager] Removing because ready=false" << std::endl;
+       Debug::log("[MonitorManager] Removing because ready=false");
 
         readyMonitors_.erase(monitor);
 
