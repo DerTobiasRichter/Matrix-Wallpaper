@@ -13,7 +13,7 @@ url='https://github.com/DerTobiasRichter'
 license=('GPL-3.0-only')
 
 depends=('gtk4' 'gtk4-layer-shell' 'systemd-libs' 'cairo')
-makedepends=('cmake' 'ninja' 'pkgconf')
+makedepends=('cmake>=4.4' 'ninja' 'pkgconf')
 
 source=()
 
