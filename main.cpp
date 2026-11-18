@@ -47,6 +47,8 @@ namespace {
 } // namespace
 
 struct MonitorState {
+    GdkMonitor* monitor = nullptr;
+
     GtkWidget* window = nullptr;
     GtkWidget* drawingArea = nullptr;
 
@@ -307,6 +309,7 @@ static void createWallpaperWindow(GtkApplication* app, GdkMonitor* monitor, Appl
 
     monitorState->window = window;
     monitorState->drawingArea = drawingArea;
+    monitorState->monitor = monitor;
 
     MonitorState* monitorPtr = monitorState.get();
 
@@ -333,19 +336,6 @@ static void createWallpaperWindow(GtkApplication* app, GdkMonitor* monitor, Appl
                     return monitor->window == window;
                 }
             );
-
-            // Stop shared sources when the last window closes.
-            if (appState->monitors.empty()) {
-                if (appState->timerId != 0) {
-                    g_source_remove(appState->timerId);
-                    appState->timerId = 0;
-                }
-
-                if (appState->journalWatchId != 0) {
-                    g_source_remove(appState->journalWatchId);
-                    appState->journalWatchId = 0;
-                }
-            }
         }),
         application
     );
@@ -372,58 +362,71 @@ static gint handleLocalOptions(
 static void activate(GtkApplication* app, gpointer userData) {
     auto* application = static_cast<ApplicationState*>(userData);
 
+    static bool applicationHeld = false;
+
+    if (!applicationHeld) {
+        g_application_hold(G_APPLICATION(app));
+        applicationHeld = true;
+    }
+
     if (!application->monitors.empty()) {
         return;
     }
 
     GdkDisplay* display = gdk_display_get_default();
     if (!application->monitorManager) {
-        application->monitorManager =
-            std::make_unique<MonitorManager>(display);
+        application->monitorManager = std::make_unique<MonitorManager>(display);
 
-        application->monitorManager->initialize();
-    }
-    GListModel* monitors = gdk_display_get_monitors(display);
+        application->monitorManager->setMonitorRemovedCallback([application](GdkMonitor* removedMonitor)
+        {
+            auto it = std::find_if(
+                application->monitors.begin(),
+                application->monitors.end(),
+                [removedMonitor](const auto& state) {
+                    return state->monitor == removedMonitor;
+                }
+            );
 
-    if (g_list_model_get_n_items(monitors) == 0) {
-        g_warning("No monitors available");
-        return;
-    }
+            if (it == application->monitors.end()) {
+                return;
+            }
 
-    const guint count = g_list_model_get_n_items(monitors);
-    bool found = false;
+            GtkWidget* window = (*it)->window;
 
-    for (guint i = 0; i < count; ++i) {
-        GdkMonitor* monitor = GDK_MONITOR(
-            g_list_model_get_item(monitors, i)
-        );
+            std::cout << "[Monitor] Removing wallpaper" << std::endl;
+
+            gtk_window_destroy(GTK_WINDOW(window));
+        });
+
+        application->monitorManager->setMonitorReadyCallback([app, application](GdkMonitor* monitor) {
 
         const char* connector = gdk_monitor_get_connector(monitor);
 
-        const bool selected =
-            application->selectedMonitor.empty() ||
-            (connector && application->selectedMonitor == connector);
-
-        if (selected) {
-            std::cout << "[Monitor] Creating wallpaper on "
-                      << (connector ? connector : "unknown")
-                      << '\n';
-
-            createWallpaperWindow(app, monitor, application);
-            found = true;
+        if (!application->selectedMonitor.empty() &&
+            (!connector || application->selectedMonitor != connector)) {
+            return;
         }
 
-        g_object_unref(monitor);
-    }
-
-    if (!found) {
-        g_warning(
-            "Monitor '%s' not found",
-            application->selectedMonitor.c_str()
+        const bool alreadyExists = std::any_of(
+            application->monitors.begin(),
+            application->monitors.end(),
+            [monitor](const auto& state) {
+                return state->monitor == monitor;
+            }
         );
 
-        g_application_quit(G_APPLICATION(app));
-        return;
+        if (alreadyExists) {
+            return;
+        }
+
+        std::cout << "[Monitor] Creating wallpaper on "
+                  << (connector ? connector : "unknown")
+                  << std::endl;
+
+        createWallpaperWindow(app, monitor, application);
+    });
+
+        application->monitorManager->initialize();
     }
 
     // One eventfd watch per application.

@@ -15,7 +15,6 @@
 
 #include "MonitorManager.h"
 
-#include <unordered_set>
 #include <iostream>
 #include <vector>
 
@@ -24,6 +23,10 @@ MonitorManager::MonitorManager(GdkDisplay* display)
 }
 
 MonitorManager::~MonitorManager() {
+
+    onMonitorReady_ = nullptr;
+    onMonitorRemoved_ = nullptr;
+
     if (signalHandler_ != 0) {
         g_signal_handler_disconnect(monitors_, signalHandler_);
     }
@@ -88,6 +91,9 @@ void MonitorManager::onMonitorGeometryChanged(GObject *object, GParamSpec *pspec
 
     const char* connector = gdk_monitor_get_connector(monitor);
 
+    auto* self = static_cast<MonitorManager*>(userData);
+    self->updateMonitorState(monitor);
+
     std::cout
         << "[MonitorManager] Geometry changed: "
         << (connector ? connector : "unknown")
@@ -113,9 +119,19 @@ void MonitorManager::observeMonitor(GdkMonitor* monitor) {
     );
 
     observedMonitors_.emplace(monitor, handlerId);
+    updateMonitorState(monitor);
 }
 
 void MonitorManager::unobserveMonitor(GdkMonitor *monitor) {
+
+    std::cout << "[MonitorManager] unobserveMonitor() called" << std::endl;
+    std::cout
+        << "[MonitorManager] Unobserving: "
+        << (gdk_monitor_get_connector(monitor)
+                ? gdk_monitor_get_connector(monitor)
+                : "unknown")
+        << std::endl;
+
     const auto it = observedMonitors_.find(monitor);
 
     if (it == observedMonitors_.end()) {
@@ -124,6 +140,10 @@ void MonitorManager::unobserveMonitor(GdkMonitor *monitor) {
 
     g_signal_handler_disconnect(monitor, it->second);
     observedMonitors_.erase(it);
+
+    if (readyMonitors_.erase(monitor) > 0 && onMonitorRemoved_) {
+        onMonitorRemoved_(monitor);
+    }
 
     g_object_unref(monitor);
 }
@@ -141,6 +161,7 @@ void MonitorManager::synchronizeMonitors(){
 
         currentMonitors.insert(monitor);
         observeMonitor(monitor);
+
 
         g_object_unref(monitor);
     }
@@ -169,4 +190,46 @@ bool MonitorManager::isMonitorReady(GdkMonitor* monitor) {
     gdk_monitor_get_geometry(monitor, &geometry);
 
     return geometry.width > 0 && geometry.height > 0;
+}
+
+void MonitorManager::setMonitorReadyCallback(MonitorCallback callback) {
+    onMonitorReady_ = std::move(callback);
+}
+
+void MonitorManager::setMonitorRemovedCallback(MonitorCallback callback) {
+    onMonitorRemoved_ = std::move(callback);
+}
+
+void MonitorManager::updateMonitorState(GdkMonitor* monitor) {
+
+    const bool ready = isMonitorReady(monitor);
+    const bool wasReady = readyMonitors_.contains(monitor);
+
+    const char* connector = gdk_monitor_get_connector(monitor);
+
+    std::cout
+        << "[MonitorManager] State: "
+        << (connector ? connector : "unknown")
+        << " | ready=" << ready
+        << " | wasReady=" << wasReady
+        << std::endl;
+
+    if (ready && !wasReady) {
+        std::cout << "[MonitorManager] Inserting because ready=true" << std::endl;
+
+        readyMonitors_.insert(monitor);
+
+        if (onMonitorReady_) {
+            onMonitorReady_(monitor);
+        }
+    }
+    else if (!ready && wasReady) {
+       std::cout << "[MonitorManager] Removing because ready=false" << std::endl;
+
+        readyMonitors_.erase(monitor);
+
+        if (onMonitorRemoved_) {
+            onMonitorRemoved_(monitor);
+        }
+    }
 }
