@@ -7,7 +7,7 @@
 # Last Modified: 2026-11-06
 
 cmake_minimum_required(VERSION 4.4)
-project(Matrix_Wallpaper LANGUAGES CXX)
+project(matrix-wallpaper LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,7 +41,7 @@ target_link_libraries(matrix-wallpaper PRIVATE
         Threads::Threads
 )
 
-set_target_properties(Matrix_Wallpaper PROPERTIES OUTPUT_NAME "matrix-wallpaper")
+set_target_properties(matrix-wallpaper PROPERTIES OUTPUT_NAME "matrix-wallpaper")
 
 include(GNUInstallDirs)
 
