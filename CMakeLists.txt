@@ -32,7 +32,9 @@ add_executable(matrix-wallpaper main.cpp
         JournalSource.cpp
         JournalSource.h
         MonitorManager.cpp
-        MonitorManager.h)
+        MonitorManager.h
+        Debug.h
+)
 
 target_link_libraries(matrix-wallpaper PRIVATE
         PkgConfig::GTK4
