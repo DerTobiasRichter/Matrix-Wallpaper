@@ -133,8 +133,6 @@ If you have a monitor definition in your `hyprland.lua` then you can define the 
 
 ### Presentation Mode
 
-### Presentation Mode
-
 Matrix Wallpaper provides an optional **Presentation Mode** (also known as *Paranoia Mode*) that replaces incoming journal text with randomized characters.
 
 The mode can be toggled at runtime by sending `SIGUSR1` to the wallpaper process. No restart is required.
