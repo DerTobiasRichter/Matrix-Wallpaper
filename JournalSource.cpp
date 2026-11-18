@@ -22,6 +22,7 @@
 #include <system_error>
 #include <unistd.h>
 #include <sys/eventfd.h>
+#include <random>
 
 #include "JournalSource.h"
 
@@ -112,6 +113,27 @@ std::string toStreamText(std::string_view input) {
     if (!result.empty() && result.back() == ' ') {
         result.pop_back();
     }
+    return result;
+}
+std::string randomizeText(std::size_t length) {
+    thread_local std::mt19937 generator(std::random_device{}());
+
+    constexpr std::string_view alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789";
+
+    std::uniform_int_distribution<std::size_t> distribution(
+        0, alphabet.size() - 1
+    );
+
+    std::string result;
+    result.reserve(length);
+
+    for (std::size_t i = 0; i < length; ++i) {
+        result.push_back(alphabet[distribution(generator)]);
+    }
+
     return result;
 }
 
@@ -214,7 +236,7 @@ void JournalSource::enqueue(MatrixMessage message) {
     }
 }
 
-void JournalSource::run(std::stop_token stopToken) {
+void JournalSource::run(const std::stop_token& stopToken) {
     sd_journal* raw = nullptr;
     const int opened = sd_journal_open(&raw, SD_JOURNAL_LOCAL_ONLY);
     if (opened < 0) {
@@ -295,6 +317,10 @@ void JournalSource::run(std::stop_token stopToken) {
             toStreamText(combined),
             toSeverity(readField(journal.get(), "PRIORITY"))
         };
+
+        if (paranoiaMode_.load(std::memory_order_relaxed)) {
+            matrixMessage.text = randomizeText(matrixMessage.text.size());
+        }
 
         if (!matrixMessage.text.empty()) {
             enqueue(std::move(matrixMessage));
