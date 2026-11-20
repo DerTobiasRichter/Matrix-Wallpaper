@@ -7,6 +7,16 @@
 #
 #
 
+# CMake build directories
+/build/
+/cmake-build-*/
 
-/matrix-wallpaper-*.pkg.tar.zst
-/matrix-wallpaper-debug-*.pkg.tar.zst
+# Arch Linux packaging
+/src/
+/pkg/
+/*.pkg.tar.*
+/*.src.tar.*
+
+# Generated files
+/CMakeCache.txt
+/compile_commands.json
