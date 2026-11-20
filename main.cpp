@@ -125,9 +125,9 @@ static void draw(
         const double maximumMs = state->maxDrawTime / 1000.0;
 
         Debug::log(std::fixed, std::setprecision(2),
-            "[Render] ", width << 'x' << height,
-            " | FPS: ",state->frameCount / elapsed,
-            " | Avg: ",averageMs, " ms",
+            "[Render] ", width, "x", height,
+            " | FPS: ", state->frameCount / elapsed,
+            " | Avg: ", averageMs, " ms",
             " | Max: ", maximumMs," ms");
 
         state->reportStart = end;
