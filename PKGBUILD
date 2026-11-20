@@ -16,6 +16,7 @@ depends=('gtk4' 'gtk4-layer-shell' 'systemd-libs' 'cairo' 'glibc' 'libgcc' 'glib
 makedepends=('cmake>=4.4' 'ninja' 'pkgconf')
 
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('6229f1622a5ffa60411997403de8b46ac79f308c0f4063c5ba712651a35740a2')
 
 build() {
     cmake -S "${srcdir}/Matrix-Wallpaper-${pkgver}" \
@@ -30,4 +31,3 @@ build() {
 package() {
     DESTDIR="$pkgdir" cmake --install "$srcdir/build"
 }
-sha256sums=('6229f1622a5ffa60411997403de8b46ac79f308c0f4063c5ba712651a35740a2')
